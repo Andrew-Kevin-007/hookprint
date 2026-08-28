@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HOOKPRINT harness verification page</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 0 24px 400px; max-width: 780px; }
+  header { position: sticky; top: 0; background: Canvas; padding: 12px 0; border-bottom: 1px solid #8884; z-index: 5; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .counters { font: 12px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: 12px 14px; margin: 12px 0; }
+  .lazy { height: 90px; border: 1px dashed #8886; border-radius: 6px; display: flex;
+          align-items: center; justify-content: center; font: 12px ui-monospace, monospace; color: #888; }
+  .lazy[data-hydrated="1"] { border-style: solid; color: inherit; background: #4a90d922; }
+  #sentinel { height: 24px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; }
+  video { width: 220px; background: #0002; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HOOKPRINT harness verification page</h1>
+  <div class="counters" id="counters">booting…</div>
+</header>
+
+<!-- Autoplay path: an explicit .play() call from page JS, which is the only
+     autoplay shape that has a call site to name. -->
+<div class="card">
+  <audio id="clip" src="/clip.wav" loop controls></audio>
+  <div><button id="more">Load more (user confirmed)</button></div>
+</div>
+
+<!-- The read-progress observer is a SECOND IntersectionObserver instance. If a
+     kill switch ever suppresses the whole API rather than one mechanic, this
+     counter stops moving and the failure is visible. -->
+<div class="card" id="progress-a">progress marker A</div>
+
+<main id="feed"></main>
+
+<div class="card" id="progress-b">progress marker B</div>
+
+<!-- The bottom sentinel. Same observer instance as the lazy placeholders. -->
+<div id="sentinel"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

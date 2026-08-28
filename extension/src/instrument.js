@@ -351,7 +351,13 @@
     var ev = {
       v: 1, seq: seq++, t: +O.now().toFixed(2), type: type,
       site: null,
-      cause: causeOverride !== undefined ? causeOverride : currentCause(),
+      // `!= null`, not `!== undefined`. Every call site in this file passes a
+      // literal null for "no override", so an `!== undefined` test made the
+      // override always win and pinned cause to null on every event in the
+      // session — the cause stack was maintained and then thrown away.
+      // Measured in Chrome 152 before the fix: 387/387 events had cause null,
+      // including a fetch issued from inside an observer callback.
+      cause: causeOverride != null ? causeOverride : currentCause(),
       data: data || {}
     };
     ev._ref = ref || null;
