@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HOOKPRINT · SWARM</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --bg:#000; --grid:#0d0f12; --line:#1a1f26;
+    --dim:#3d4650; --mid:#6b7885; --txt:#9fb0c0; --hot:#e8f4ff;
+    --accept:#7df9ff; --drop:#ff2f45; --warn:#ffb020;
+    --l1:#ff3b1f; --l2:#ff7a18; --l3:#ffc21a; --l4:#fff3c4;
+    --mono:'SF Mono',ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace;
+  }
+  html,body{height:100%;background:var(--bg);color:var(--txt);
+    font-family:var(--mono);font-size:11px;overflow:hidden;
+    -webkit-font-smoothing:antialiased}
+
+  #app{display:grid;height:100vh;
+    grid-template-columns:186px 1fr 214px;
+    grid-template-rows:26px 1fr 152px;
+    grid-template-areas:"top top top" "left stage right" "log log log";
+    gap:1px;background:var(--line)}
+  .pane{background:var(--bg);position:relative;overflow:hidden}
+
+  /* ── top bar ── */
+  #top{grid-area:top;display:flex;align-items:center;gap:0;
+    background:var(--bg);border-bottom:1px solid var(--line)}
+  .brand{padding:0 12px;height:100%;display:flex;align-items:center;
+    gap:9px;border-right:1px solid var(--line)}
+  .brand b{color:var(--hot);letter-spacing:3.5px;font-weight:600;font-size:11px}
+  .brand span{color:var(--dim);letter-spacing:2.5px;font-size:9px}
+  .tstat{padding:0 13px;height:100%;display:flex;align-items:center;gap:7px;
+    border-right:1px solid var(--line);white-space:nowrap}
+  .tstat i{font-style:normal;color:var(--dim);font-size:9px;letter-spacing:1.2px}
+  .tstat b{font-weight:500;color:var(--txt);font-variant-numeric:tabular-nums}
+  .pulse{width:5px;height:5px;border-radius:50%;background:var(--accept);
+    box-shadow:0 0 7px var(--accept);animation:bl 1.15s ease-in-out infinite}
+  @keyframes bl{0%,100%{opacity:1}50%{opacity:.22}}
+  #clock{margin-left:auto;padding:0 13px;color:var(--dim);font-size:9px;
+    letter-spacing:1.4px}
+
+  /* ── left: readers ── */
+  #left{grid-area:left;padding:9px 0 0}
+  .hd{font-size:8.5px;letter-spacing:2.2px;color:var(--dim);
+    padding:0 11px 8px;text-transform:uppercase}
+  .rd{padding:8px 11px;border-top:1px solid var(--line);position:relative}
+  .rd:hover{background:#060809}
+  .rd-t{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+  .chip{width:7px;height:7px;flex:none;border-radius:1px}
+  .rd-n{color:var(--txt);font-size:10px;letter-spacing:.4px;flex:1}
+  .rd-c{color:var(--mid);font-variant-numeric:tabular-nums;font-size:10px}
+  .spark{height:15px;width:100%;display:block}
+  .rd-m{display:flex;justify-content:space-between;margin-top:4px;
+    font-size:8.5px;color:var(--dim);letter-spacing:.5px}
+
+  /* ── stage ── */
+  #stage{grid-area:stage}
+  #cv{display:block;width:100%;height:100%}
+  .ov{position:absolute;pointer-events:none;font-size:8.5px;
+    letter-spacing:1.6px;color:var(--dim)}
+  #ov-tl{top:9px;left:11px}
+  #ov-tr{top:9px;right:11px;text-align:right}
+  #ov-bl{bottom:9px;left:11px}
+  .ov b{color:var(--mid);font-weight:400}
+
+  /* ── right: verdicts ── */
+  #right{grid-area:right;display:flex;flex-direction:column}
+  #vs{flex:1;overflow:hidden;position:relative}
+  .v{padding:5px 10px;border-top:1px solid var(--line);
+    display:flex;gap:8px;align-items:baseline;animation:vin .3s ease-out}
+  @keyframes vin{from{opacity:0;transform:translateX(9px)}to{opacity:1;transform:none}}
+  .v-b{width:2px;align-self:stretch;flex:none}
+  .v-m{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-size:10px}
+  .v-e{font-size:8.5px;color:var(--dim);letter-spacing:.3px}
+  .v.ok .v-m{color:var(--accept)} .v.ok .v-b{background:var(--accept)}
+  .v.no .v-m{color:var(--drop);opacity:.62} .v.no .v-b{background:var(--drop)}
+  #tally{border-top:1px solid var(--line);padding:9px 10px;background:#040506}
+  .tr{display:flex;justify-content:space-between;margin-bottom:5px;font-size:9.5px}
+  .tr b{font-variant-numeric:tabular-nums;font-weight:500}
+  .bar{height:3px;background:var(--line);display:flex;margin-top:7px}
+  .bar i{display:block;height:100%}
+
+  /* ── log ── */
+  #log{grid-area:log;overflow:hidden;padding:7px 0;position:relative}
+  #log::after{content:'';position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg,rgba(0,0,0,.92),transparent 22%,transparent 68%,rgba(0,0,0,.75))}
+  .lr{padding:1px 12px;font-size:9.5px;white-space:nowrap;letter-spacing:.2px;
+    display:flex;gap:9px;line-height:1.42}
+  .lr .t{color:#2b333c;flex:none}
+  .lr .s{flex:none;width:88px}
+  .lr .m{color:var(--dim);overflow:hidden;text-overflow:ellipsis}
+  .lr.hi .m{color:var(--txt)}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="top">
+    <div class="brand"><b>HOOKPRINT</b><span>SWARM</span></div>
+    <div class="tstat"><span class="pulse"></span><i>SCAN</i><b id="s-url">—</b></div>
+    <div class="tstat"><i>EVENTS</i><b id="s-ev">0</b></div>
+    <div class="tstat"><i>PROPOSED</i><b id="s-pr">0</b></div>
+    <div class="tstat"><i>BOUND</i><b id="s-ac" style="color:var(--accept)">0</b></div>
+    <div class="tstat"><i>DROPPED</i><b id="s-dr" style="color:var(--drop)">0</b></div>
+    <div class="tstat"><i>FPS</i><b id="s-fps">—</b></div>
+    <div id="clock">—</div>
+  </div>
+
+  <div class="pane" id="left">
+    <div class="hd">Readers · 4 active</div>
+    <div id="readers"></div>
+    <div class="hd" style="padding-top:14px">Adjudicator</div>
+    <div class="rd" style="border-bottom:1px solid var(--line)">
+      <div class="rd-t"><span class="chip" style="background:var(--accept)"></span>
+        <span class="rd-n">evidence-bind</span><span class="rd-c" id="adj-q">0</span></div>
+      <div class="rd-m"><span>REQUIRE file:line</span><span id="adj-r">—</span></div>
+    </div>
+  </div>
+
+  <div class="pane" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="ov" id="ov-tl">CANDIDATE FLOW · <b>4 READERS → 1 ADJUDICATOR</b></div>
+    <div class="ov" id="ov-tr">NO PER-SITE RULES<br><b id="ov-gen">GENERALISING</b></div>
+    <div class="ov" id="ov-bl">UNBOUND CANDIDATES DISCARDED · <b>NOT REPORTED</b></div>
+  </div>
+
+  <div class="pane" id="right">
+    <div class="hd" style="padding-top:9px">Verdicts</div>
+    <div id="vs"></div>
+    <div id="tally">
+      <div class="tr"><span style="color:var(--accept)">BOUND</span><b id="t-ac">0</b></div>
+      <div class="tr"><span style="color:var(--drop)">DROPPED</span><b id="t-dr">0</b></div>
+      <div class="tr"><span style="color:var(--dim)">BIND RATE</span><b id="t-rt">—</b></div>
+      <div class="bar"><i id="b-ac" style="background:var(--accept);width:0"></i>
+        <i id="b-dr" style="background:var(--drop);width:0"></i></div>
+    </div>
+  </div>
+
+  <div class="pane" id="log"><div id="logrows"></div></div>
+</div>
+
+<script>
+"use strict";
+
+/* ═══ readers ═══ */
+const READERS = [
+  {id:"js-source",  label:"js-source",    color:"#ff3b1f", note:"AST · call-site"},
+  {id:"dom-mut",    label:"dom-mutation", color:"#ff7a18", note:"subtree · append"},
+  {id:"net-cadence",label:"net-cadence",  color:"#ffc21a", note:"interval · burst"},
+  {id:"layout",     label:"layout",       color:"#fff3c4", note:"viewport · sentinel"},
+];
+
+const MECHANICS = [
+  {m:"infinite_scroll",         f:"main.js",     sup:true },
+  {m:"autoplay",                f:"player.js",   sup:true },
+  {m:"countdown_timer",         f:"promo.js",    sup:false},
+  {m:"scarcity_message",        f:"stock.js",    sup:false},
+  {m:"variable_interval_refetch",f:"feed.js",    sup:false},
+];
+
+const $=s=>document.querySelector(s), R=(a,b)=>a+Math.random()*(b-a),
+      RI=(a,b)=>Math.floor(R(a,b+1)), pick=a=>a[RI(0,a.length-1)];
+
+/* ═══ state ═══ */
+const S={events:0,proposed:0,accepted:0,dropped:0,queue:0,
+         perReader:{},hist:{},running:true};
+READERS.forEach(r=>{S.perReader[r.id]=0;S.hist[r.id]=new Array(34).fill(0)});
+
+/* ═══ left panel ═══ */
+$("#readers").innerHTML = READERS.map(r=>`
+  <div class="rd">
+    <div class="rd-t"><span class="chip" style="background:${r.color}"></span>
+      <span class="rd-n">${r.label}</span><span class="rd-c" id="c-${r.id}">0</span></div>
+    <canvas class="spark" id="sp-${r.id}"></canvas>
+    <div class="rd-m"><span>${r.note}</span><span id="r-${r.id}">idle</span></div>
+  </div>`).join("");
+
+function drawSpark(r){
+  const c=$("#sp-"+r.id); if(!c) return;
+  const dpr=devicePixelRatio||1, w=c.clientWidth, h=c.clientHeight;
+  if(!w) return;
+  c.width=w*dpr; c.height=h*dpr;
+  const x=c.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,w,h);
+  const d=S.hist[r.id], mx=Math.max(1,...d), bw=w/d.length;
+  d.forEach((v,i)=>{
+    const bh=Math.max(v?1:0,(v/mx)*(h-2));
+    x.fillStyle=r.color; x.globalAlpha=.28+.72*(v/mx||0);
+    x.fillRect(i*bw,h-bh,Math.max(1,bw-1),bh);
+  });
+  x.globalAlpha=1;
+}
+
+/* ═══ canvas swarm ═══ */
+const cv=$("#cv"), ctx=cv.getContext("2d");
+let W=0,H=0,DPR=1, GATE=0, LANE=[];
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  W=cv.clientWidth; H=cv.clientHeight;
+  cv.width=W*DPR; cv.height=H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  GATE=W*0.64;
+  LANE=READERS.map((_,i)=>H*(0.20+i*0.20));
+}
+new ResizeObserver(resize).observe(cv); resize();
+
+/* particle pools */
+const AMB=[], CAND=[], SPARK=[];
+const AMB_N=()=>Math.round(Math.min(4200,W*4.2));
+
+function seedAmbient(){
+  AMB.length=0;
+  for(let i=0;i<AMB_N();i++) AMB.push(newAmb(true));
+}
+function newAmb(seed){
+  const li=RI(0,3), y=LANE[li]||H/2;
+  // gaussian-ish spread: dense core, sparse edges — reads as a band, not a line
+  const g=(Math.random()+Math.random()+Math.random()-1.5)/1.5;
+  return{x:seed?R(0,W):R(-90,-4), y:y+g*88,
+    vx:R(.7,4.2), vy:R(-.06,.06), r:R(.4,1.5),
+    c:READERS[li].color, a:R(.14,.92), li};
+}
+function newCand(readerIdx){
+  const r=READERS[readerIdx], mech=pick(MECHANICS);
+  const bound=Math.random()>0.38;
+  return{x:-8, y:(LANE[readerIdx]||H/2)+R(-16,16),
+    vx:R(4.6,7.4), vy:R(-.12,.12), r:R(2.4,3.6),
+    c:r.color, mech, bound, judged:false, life:1, reader:r};
+}
+function burst(x,y,col,n,pow){
+  for(let i=0;i<n;i++){
+    const a=R(0,Math.PI*2), s=R(.4,pow);
+    SPARK.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,
+      r:R(.5,1.7),c:col,life:1,decay:R(.014,.04)});
+  }
+}
+seedAmbient();
+
+/* ═══ render ═══ */
+let last=performance.now(), fpsAcc=0, fpsN=0, t=0;
+
+function frame(now){
+  // Cap generously: a backgrounded tab throttles rAF hard, and a tight cap
+  // makes candidates crawl instead of crossing the gate. Physics stays stable
+  // because every integration below is dt-scaled.
+  const dt=Math.min(120,now-last); last=now; t+=dt;
+  fpsAcc+=1000/dt; fpsN++;
+  if(fpsN>=26){$("#s-fps").textContent=Math.round(fpsAcc/fpsN); fpsAcc=fpsN=0;}
+
+  // trail — low alpha leaves long streaks
+  ctx.globalCompositeOperation="source-over";
+  ctx.fillStyle="rgba(0,0,0,0.155)";
+  ctx.fillRect(0,0,W,H);
+
+  drawChrome();
+
+  ctx.globalCompositeOperation="lighter";
+
+  // ambient stream
+  for(let i=0;i<AMB.length;i++){
+    const p=AMB[i];
+    p.x+=p.vx*(dt/16); p.y+=p.vy;
+    p.y+=Math.sin((p.x*0.011)+(p.li*1.7)+t*0.0011)*0.30;
+    if(p.x>W+10){ AMB[i]=newAmb(false); continue; }
+    const near=1-Math.min(1,Math.abs(p.x-GATE)/260);
+    ctx.globalAlpha=p.a*(0.5+near*0.5);
+    // hot core near the gate: particles blow out toward white as they converge
+    ctx.fillStyle = near>0.72 ? "#fff6e2" : p.c;
+    ctx.fillRect(p.x,p.y,p.r*(1.8+p.vx*1.5),p.r*0.9);
+  }
+
+  // candidates
+  for(let i=CAND.length-1;i>=0;i--){
+    const p=CAND[i];
+    if(!p.judged){
+      p.x+=p.vx*(dt/16);
+      p.y+=p.vy+Math.sin(p.x*0.014+t*0.002)*0.42;
+      if(p.x>=GATE) judge(p);
+    }else if(p.bound){
+      p.x+=p.vx*1.5*(dt/16); p.y+=(H*0.5-p.y)*0.028*(dt/16);
+      if(p.x>W+18){CAND.splice(i,1);continue;}
+    }else{
+      p.vx*=0.90; p.vy+=0.055*(dt/16);
+      p.x+=p.vx*(dt/16); p.y+=p.vy*(dt/16);
+      p.life-=0.020*(dt/16);
+      if(p.life<=0){CAND.splice(i,1);continue;}
+    }
+    const glow=p.bound&&p.judged;
+    ctx.globalAlpha=p.life*(glow?1:0.92);
+    ctx.fillStyle=glow?"#e8fbff":p.c;
+    ctx.shadowBlur=glow?15:9; ctx.shadowColor=glow?"#7df9ff":p.c;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*(glow?1.35:1),0,6.284); ctx.fill();
+    ctx.shadowBlur=0;
+  }
+
+  // sparks
+  for(let i=SPARK.length-1;i>=0;i--){
+    const s=SPARK[i];
+    s.x+=s.vx; s.y+=s.vy; s.vy+=0.018; s.vx*=0.985; s.life-=s.decay;
+    if(s.life<=0){SPARK.splice(i,1);continue;}
+    ctx.globalAlpha=s.life*0.85; ctx.fillStyle=s.c;
+    ctx.fillRect(s.x,s.y,s.r,s.r);
+  }
+
+  ctx.globalAlpha=1; ctx.globalCompositeOperation="source-over";
+  requestAnimationFrame(frame);
+}
+
+function drawChrome(){
+  // lane rails
+  ctx.globalAlpha=1;
+  READERS.forEach((r,i)=>{
+    const y=LANE[i];
+    const g=ctx.createLinearGradient(0,0,GATE,0);
+    g.addColorStop(0,"rgba(255,255,255,0.055)");
+    g.addColorStop(1,"rgba(255,255,255,0.012)");
+    ctx.strokeStyle=g; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,y+.5); ctx.lineTo(GATE,y+.5); ctx.stroke();
+    ctx.fillStyle="rgba(255,255,255,.16)";
+    ctx.font="8px ui-monospace,monospace";
+    ctx.fillText(r.label.toUpperCase(),10,y-7);
+  });
+
+  // gate
+  const pulse=0.30+Math.sin(t*0.0032)*0.14;
+  ctx.strokeStyle=`rgba(125,249,255,${pulse})`; ctx.lineWidth=1;
+  ctx.setLineDash([3,5]);
+  ctx.beginPath(); ctx.moveTo(GATE+.5,H*0.06); ctx.lineTo(GATE+.5,H*0.94); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle=`rgba(125,249,255,${pulse+0.30})`;
+  ctx.font="8px ui-monospace,monospace";
+  ctx.save(); ctx.translate(GATE-6,H*0.06+2); ctx.rotate(-Math.PI/2);
+  ctx.textAlign="right"; ctx.fillText("EVIDENCE  GATE",0,0); ctx.restore();
+
+  // output rail
+  ctx.strokeStyle="rgba(125,249,255,0.10)";
+  ctx.beginPath(); ctx.moveTo(GATE,H*0.5+.5); ctx.lineTo(W,H*0.5+.5); ctx.stroke();
+}
+
+/* ═══ adjudication ═══ */
+function judge(p){
+  p.judged=true; S.queue=Math.max(0,S.queue-1);
+  const fl=RI(120,9400);
+  if(p.bound){
+    S.accepted++; burst(p.x,p.y,"#7df9ff",13,3.1);
+    verdict(true,p.mech.m,`${p.mech.f}:${fl}`);
+    log("adjudicator",`BOUND    ${p.mech.m} → ${p.mech.f}:${fl}`,true);
+  }else{
+    S.dropped++; burst(p.x,p.y,"#ff2f45",7,2.0);
+    const why=pick(["no resolvable node","stack frame unattributable",
+                    "call-site is extension code","minified beyond attribution",
+                    "no observed behaviour"]);
+    verdict(false,p.mech.m,why);
+    log("adjudicator",`DROPPED  ${p.mech.m} — ${why}`,false);
+  }
+  paint();
+}
+
+/* ═══ verdict feed ═══ */
+const vs=$("#vs");
+function verdict(ok,mech,ev){
+  const d=document.createElement("div");
+  d.className="v "+(ok?"ok":"no");
+  d.innerHTML=`<span class="v-b"></span><span style="min-width:0;flex:1">
+    <span class="v-m">${ok?"✓":"✕"} ${mech}</span>
+    <span class="v-e">${ev}</span></span>`;
+  vs.prepend(d);
+  while(vs.children.length>13) vs.lastChild.remove();
+}
+
+/* ═══ log ═══ */
+const lr=$("#logrows");
+function log(src,msg,hi){
+  const d=document.createElement("div");
+  d.className="lr"+(hi?" hi":"");
+  const r=READERS.find(x=>x.id===src);
+  d.innerHTML=`<span class="t">${stamp()}</span>
+    <span class="s" style="color:${r?r.color:"var(--accept)"}">${src}</span>
+    <span class="m">${msg}</span>`;
+  lr.prepend(d);
+  while(lr.children.length>26) lr.lastChild.remove();
+}
+function stamp(){
+  const d=new Date();
+  return d.toTimeString().slice(0,8)+"."+String(d.getMilliseconds()).padStart(3,"0");
+}
+
+/* ═══ paint stats ═══ */
+function paint(){
+  $("#s-ev").textContent=S.events.toLocaleString();
+  $("#s-pr").textContent=S.proposed;
+  $("#s-ac").textContent=S.accepted;
+  $("#s-dr").textContent=S.dropped;
+  $("#t-ac").textContent=S.accepted;
+  $("#t-dr").textContent=S.dropped;
+  $("#adj-q").textContent=S.queue;
+  const tot=S.accepted+S.dropped;
+  const rate=tot?Math.round(S.accepted/tot*100):0;
+  $("#t-rt").textContent=tot?rate+"%":"—";
+  $("#adj-r").textContent=tot?rate+"% bound":"—";
+  $("#b-ac").style.width=tot?(S.accepted/tot*100)+"%":"0";
+  $("#b-dr").style.width=tot?(S.dropped/tot*100)+"%":"0";
+  READERS.forEach(r=>{ $("#c-"+r.id).textContent=S.perReader[r.id]; });
+}
+
+/* ═══ live feed (replace with real harness events) ═══ */
+function emit(){
+  if(!S.running) return;
+  const ri=RI(0,3), r=READERS[ri];
+  const n=RI(1,5);
+  S.events+=n; S.perReader[r.id]+=n;
+  S.hist[r.id].push(n); S.hist[r.id].shift();
+  $("#r-"+r.id).textContent=n>3?"burst":"active";
+  drawSpark(r);
+
+  if(Math.random()<0.42){
+    S.proposed++; S.queue++;
+    CAND.push(newCand(ri));
+    log(r.id,`candidate · ${pick(MECHANICS).m} · +${n} evt`,false);
+  }else if(Math.random()<0.30){
+    log(r.id,pick([
+      `observed ${RI(2,9)} auto-loads, 0 user-confirmation events`,
+      `interval variance σ=${R(.1,2.4).toFixed(2)} — signal, not intent`,
+      `stack frame → ${pick(MECHANICS).f}:${RI(100,9000)}`,
+      `subtree append ×${RI(2,24)} · no gesture`,
+      `patched ${pick(["IntersectionObserver","setTimeout","fetch","play()"])} · original retained`,
+    ]),false);
+  }
+  paint();
+  setTimeout(emit,R(45,150));
+}
+
+setInterval(()=>{
+  const d=new Date();
+  $("#clock").textContent=d.toTimeString().slice(0,8)+" · LOCAL · NO EGRESS";
+},1000);
+
+const HOSTS=["news.ycombinator.com","reddit.com/r/all","youtube.com","amazon.in","x.com"];
+$("#s-url").textContent=pick(HOSTS);
+$("#ov-gen").textContent="UNSEEN SITE";
+
+/* public API — the harness pushes real events here */
+window.HOOKPRINT_SWARM={
+  event(readerId,msg){
+    const i=READERS.findIndex(r=>r.id===readerId); if(i<0) return;
+    S.events++; S.perReader[readerId]++; log(readerId,msg,false); paint();
+  },
+  candidate(readerId,mechanism,bound){
+    const i=READERS.findIndex(r=>r.id===readerId); if(i<0) return;
+    S.proposed++; S.queue++;
+    const c=newCand(i); c.mech={m:mechanism,f:"page.js",sup:bound};
+    c.bound=!!bound; CAND.push(c); paint();
+  },
+  pause(){S.running=false}, resume(){if(!S.running){S.running=true;emit()}},
+  reset(){Object.assign(S,{events:0,proposed:0,accepted:0,dropped:0,queue:0});
+    CAND.length=0; vs.innerHTML=""; lr.innerHTML=""; paint();}
+};
+
+addEventListener("keydown",e=>{
+  if(e.key===" "){e.preventDefault(); S.running?window.HOOKPRINT_SWARM.pause()
+    :window.HOOKPRINT_SWARM.resume();}
+  if(e.key==="r") window.HOOKPRINT_SWARM.reset();
+});
+
+log("adjudicator","harness attached · patches installed at document_start",true);
+READERS.forEach(r=>drawSpark(r));
+paint(); emit(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
