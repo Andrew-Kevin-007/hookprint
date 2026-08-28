@@ -1,9 +1,0 @@
-{
-  "name": "hookprint-detectors",
-  "private": true,
-  "type": "module",
-  "description": "Scopes ES-module resolution to this folder so `node --test` can run the detector tests without a build step. Chrome ignores this file entirely.",
-  "scripts": {
-    "test": "node --test tests/"
-  }
-}
