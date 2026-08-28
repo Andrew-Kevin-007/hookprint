@@ -1,0 +1,96 @@
+{
+  "url": "https://example.com/feed",
+  "scanned_at": "2026-08-28T14:30:00Z",
+  "findings": [
+    {
+      "id": "f_001",
+      "mechanism": "infinite_scroll",
+      "display_name": "Infinite Scroll",
+      "confidence": "high",
+      "evidence": {
+        "file": "https://example.com/static/main.js",
+        "line": 4412,
+        "column": 18,
+        "snippet": "observer.observe(sentinel); // fetchNextPage()"
+      },
+      "observed": {
+        "summary": "7 automatic content loads, 0 user-confirmation events",
+        "metrics": { "auto_loads": 7, "user_confirmations": 0 }
+      },
+      "action": {
+        "supported": true,
+        "label": "Disable infinite loading",
+        "action_id": "disable_infinite_scroll"
+      }
+    },
+    {
+      "id": "f_002",
+      "mechanism": "autoplay",
+      "display_name": "Autoplay",
+      "confidence": "high",
+      "evidence": {
+        "file": "https://example.com/static/player.bundle.js",
+        "line": 812,
+        "column": 5,
+        "snippet": "videoEl.play(); // triggered on scroll-into-view"
+      },
+      "observed": {
+        "summary": "4 videos auto-played without user gesture, total 3m 12s of unprompted media",
+        "metrics": { "autoplay_events": 4, "user_gestures": 0 }
+      },
+      "action": {
+        "supported": true,
+        "label": "Disable autoplay",
+        "action_id": "disable_autoplay"
+      }
+    },
+    {
+      "id": "f_003",
+      "mechanism": "countdown_timer",
+      "display_name": "Countdown Timer",
+      "confidence": "medium",
+      "evidence": {
+        "file": "https://example.com/static/checkout.js",
+        "line": 291,
+        "column": 3,
+        "snippet": "startCountdown(600); // 'Offer expires in...' overlay"
+      },
+      "observed": {
+        "summary": "Countdown widget rendered 3 times; timer resets on page reload — deadline is artificial",
+        "metrics": { "renders": 3, "genuine_deadline": false }
+      },
+      "action": {
+        "supported": false
+      }
+    },
+    {
+      "id": "f_004",
+      "mechanism": "variable_interval_refetch",
+      "display_name": "Variable Interval Refetch",
+      "confidence": "low",
+      "evidence": {
+        "file": "https://example.com/static/feed-poller.js",
+        "line": 134,
+        "column": 9,
+        "snippet": "setTimeout(poll, baseDelay * jitter()); // unpredictable refresh"
+      },
+      "observed": {
+        "summary": "11 background refetch calls with randomised intervals between 8s and 47s",
+        "metrics": { "refetch_calls": 11, "interval_min_s": 8, "interval_max_s": 47 }
+      },
+      "action": {
+        "supported": false
+      }
+    }
+  ],
+  "dropped": [
+    {
+      "proposed_mechanism": "variable_interval_refetch",
+      "reason": "no resolvable node"
+    },
+    {
+      "proposed_mechanism": "scarcity_message",
+      "reason": "pattern matched CSS text only — no executable hook found"
+    }
+  ]
+}
