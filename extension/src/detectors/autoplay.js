@@ -2,58 +2,79 @@
  * HOOKPRINT — autoplay detector.
  *
  * ---------------------------------------------------------------------------
- * WHAT THIS LOOKS FOR
+ * WHAT DECIDES IT
  * ---------------------------------------------------------------------------
- * `HTMLMediaElement.play()` invoked with no user confirmation preceding it
- * inside a plausible causal window. A play call one second after a click is a
- * user pressing play; a play call 4.5 seconds after load with nothing in
- * between is the page deciding for them.
+ * EVENTS.md, on `media.play`:
  *
- * A timer between load and play raises confidence rather than creating the
- * finding. The finding stands on "no gesture caused this"; the timer only
- * tells us it was scheduled rather than reactive.
+ *   "`user_activation` is the whole `autoplay` discrimination and nothing
+ *    else is. A `play()` with `is_active: false` and `has_been_active: false`
+ *    was not initiated by the user. If `has_been_active` is `true` the user
+ *    has interacted with the page at some point, and the claim is materially
+ *    weaker — that is a `medium`, not a `high`."
+ *
+ * This replaces the timing heuristic the detector used before the contract
+ * existed ("a play call more than a second after the last click"). `is_active`
+ * is a live read of `navigator.userActivation` at the moment `play()` was
+ * called, which is a fact about the invocation rather than an inference from
+ * two timestamps — and it survives the absence of any gesture event stream,
+ * which harness v1 does not provide.
+ *
+ * When `user_activation` is `{is_active: null, has_been_active: null}` the
+ * browser did not expose the API. That is *unknown*, not *false*, and an
+ * unknown does not become a finding.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT WE MEASURE VERSUS WHAT WE INFER
+ * ---------------------------------------------------------------------------
+ * `media.play` records that `play()` was *called*. `media.state` records what
+ * the browser actually did. CONTRACT.md's `observed` is measured behaviour, so
+ * playback is only claimed when a `media.state` of `"playing"` confirms it.
+ *
+ * `state: "play_rejected"` means the browser's own autoplay policy stopped it.
+ * EVENTS.md: "that is not our finding to claim." The page tried; nothing
+ * played; there is no mechanic running for a user to switch off.
  *
  * ---------------------------------------------------------------------------
  * THE HONEST DROP
  * ---------------------------------------------------------------------------
  * A `<video autoplay>` attribute autoplays with no JavaScript at all. It is a
- * real mechanic and we can see it happen — but there is no line of the site's
- * code to point at, so under CONTRACT.md rule 1 it is not a Finding. It goes
- * to `dropped` with that reason stated. Showing that drop is a stronger claim
- * than showing a finding with a guessed line.
+ * real mechanic and `media.element_seen` lets us see it — but there is no line
+ * of the site's code to point at, so under CONTRACT.md rule 1 it is not a
+ * Finding. It goes to `dropped` with that reason stated. Showing that drop is
+ * a stronger claim than showing a finding with a guessed line.
  */
 
-import { EVENT_TYPES } from './schema.js';
-import {
-  createIdAllocator,
-  makeFinding,
-  makeDropped,
-  eventsOfType,
-  confirmations,
-  lastConfirmationBefore
-} from './util.js';
+import { EVENT, CAUSE, causedBy, siteOf } from './schema.js';
+import { createIdAllocator, makeFinding, makeDropped, eventsOfType } from './util.js';
 
 const MECHANISM = 'autoplay';
 
 /**
- * A play call within this long after a confirmation is attributed to it.
- * Generous on purpose: the cost of a false positive on a clean page is far
- * higher than the cost of missing a marginal true positive.
+ * Classify one `play()` call by the only thing that decides it.
+ * @returns {"user"|"auto_cold"|"auto_warm"|"unknown"}
  */
-const GESTURE_WINDOW_MS = 1000;
+export function classifyActivation(userActivation) {
+  const ua = userActivation;
+  if (!ua || typeof ua !== 'object') return 'unknown';
+  if (ua.is_active === true) return 'user';
+  if (ua.is_active !== false) return 'unknown'; // null — API unavailable
+  return ua.has_been_active === true ? 'auto_warm' : 'auto_cold';
+}
 
-/** A play call this soon after a timer callback fired is assumed to be inside it. */
-const TIMER_CORRELATION_MS = 100;
-
-function playedViaTimer(playEvent, timerFires) {
-  if (playEvent.data?.viaTimer === true) return true;
-  return timerFires.some(
-    (fire) => fire.t <= playEvent.t && playEvent.t - fire.t <= TIMER_CORRELATION_MS
-  );
+/** Media ids the browser confirmed actually played. */
+function playedMedia(events) {
+  const played = new Set();
+  const rejected = new Set();
+  for (const ev of eventsOfType(events, EVENT.MEDIA_STATE)) {
+    const id = ev.data?.media_id;
+    if (ev.data?.state === 'playing') played.add(id);
+    else if (ev.data?.state === 'play_rejected') rejected.add(id);
+  }
+  return { played, rejected };
 }
 
 /**
- * @param {import('./schema.js').HookEvent[]} events
+ * @param {import('./schema.js').HookEvent[]} events  validated, seq-ordered
  * @param {{nextId?: () => string}} [options]
  * @returns {{findings: Object[], dropped: Object[]}}
  */
@@ -62,84 +83,109 @@ export function analyse(events, options = {}) {
   const findings = [];
   const dropped = [];
 
-  const plays = eventsOfType(events, EVENT_TYPES.MEDIA_PLAY);
-  if (plays.length === 0) return { findings, dropped };
+  const plays = eventsOfType(events, EVENT.MEDIA_PLAY);
+  const seen = eventsOfType(events, EVENT.MEDIA_ELEMENT_SEEN);
+  if (plays.length === 0 && seen.length === 0) return { findings, dropped };
 
-  const gestures = confirmations(events);
-  const timerFires = eventsOfType(events, EVENT_TYPES.TIMER_FIRE);
+  const { played, rejected } = playedMedia(events);
 
   /** Group by media element so two autoplaying videos are two findings. */
   const byMedia = new Map();
   for (const play of plays) {
-    const key = String(play.data?.media ?? play.data?.mediaId ?? play.data?.target ?? 'media_0');
+    const key = play.data?.media_id ?? 'media_0';
     if (!byMedia.has(key)) byMedia.set(key, []);
     byMedia.get(key).push(play);
   }
 
-  for (const [mediaKey, mediaPlays] of byMedia) {
-    const unattributed = [];
-    let userInitiated = 0;
+  for (const [mediaId, mediaPlays] of byMedia) {
+    // The browser refused to play it. Nothing is running; nothing to report.
+    if (rejected.has(mediaId) && !played.has(mediaId)) continue;
 
-    for (const play of mediaPlays) {
-      const prior = lastConfirmationBefore(gestures, play.t);
-      if (prior && play.t - prior.t <= GESTURE_WINDOW_MS) {
-        userInitiated += 1;
-        continue;
-      }
-      unattributed.push(play);
-    }
+    const auto = mediaPlays.filter((p) => {
+      const kind = classifyActivation(p.data?.user_activation);
+      return kind === 'auto_cold' || kind === 'auto_warm';
+    });
+    if (auto.length === 0) continue;
 
-    if (unattributed.length === 0) continue;
+    const cold = auto.some((p) => classifyActivation(p.data?.user_activation) === 'auto_cold');
+    const witness = auto.find((p) => siteOf(p)) ?? null;
+    const site = witness ? siteOf(witness) : null;
 
-    // Prefer the first unattributed play — the one that started it — and use
-    // the first of those that has a resolvable call site.
-    const witness = unattributed.find((p) => p.site) ?? null;
-
-    if (!witness) {
-      const attributeOnly = unattributed.some((p) => p.data?.hasAutoplayAttr === true);
+    if (!site) {
+      const declarative = auto.some((p) => p.data?.autoplay_attr === true);
       dropped.push(
         makeDropped(
           MECHANISM,
           'no resolvable node',
-          attributeOnly
-            ? `media "${mediaKey}" started without a gesture via the autoplay attribute — no JavaScript call site exists to point at`
-            : `${unattributed.length} play call(s) on "${mediaKey}" with no preceding user confirmation, but no stack frame resolved to page JavaScript`
+          declarative
+            ? `media ${mediaId} started without user activation and carries the autoplay ` +
+                `attribute — no JavaScript call site exists to point at`
+            : `${auto.length} play call(s) on media ${mediaId} without user activation, ` +
+                `but no stack frame resolved to page JavaScript`
         )
       );
       continue;
     }
 
-    const viaTimer = unattributed.some((p) => playedViaTimer(p, timerFires));
-    const muted = unattributed.some((p) => p.data?.muted === true);
+    const confirmed = played.has(mediaId);
+    const muted = auto.some((p) => p.data?.muted === true);
+    const viaTimer = auto.some((p) => causedBy(p, CAUSE.TIMER));
 
-    // A muted autoplay is the browser-permitted variety and a weaker claim.
+    // `has_been_active: true` means the user has touched the page at some
+    // point, so the claim is materially weaker. EVENTS.md is explicit that
+    // this is a medium and not a high.
     let confidence = 'medium';
-    if (viaTimer && !muted) confidence = 'high';
-    else if (viaTimer || !muted) confidence = 'medium';
-    if (muted && !viaTimer) confidence = 'low';
+    if (cold && confirmed && !muted) confidence = 'high';
+    else if (!confirmed || (muted && !cold)) confidence = 'low';
 
-    const delaySeconds = Math.round((witness.t / 1000) * 10) / 10;
+    const startedAt = Math.round((witness.t / 1000) * 10) / 10;
 
     findings.push(
       makeFinding({
         id: nextId(),
         mechanism: MECHANISM,
         confidence,
-        site: witness.site,
+        site,
         summary:
-          `playback started ${delaySeconds}s after page load with no preceding ` +
-          `user confirmation` +
+          (confirmed
+            ? `playback started ${startedAt}s into the session`
+            : `play() was called ${startedAt}s into the session`) +
+          ` with no user activation on the page` +
+          (cold ? ' at any point' : ' at the moment of the call') +
           (viaTimer ? ', from a timer callback' : '') +
           (muted ? ' (muted)' : ''),
         metrics: {
-          unattributed_plays: unattributed.length,
-          user_initiated_plays: userInitiated,
+          media_id: mediaId,
+          unattributed_plays: auto.length,
+          user_initiated_plays: mediaPlays.length - auto.length,
+          user_had_ever_interacted: !cold,
+          playback_confirmed: confirmed,
           via_timer: viaTimer,
           muted,
-          first_play_ms: witness.t,
-          media: mediaKey
+          first_play_ms: witness.t
         }
       })
+    );
+  }
+
+  /**
+   * Declarative autoplay: the element carries the attribute and no script ever
+   * called play() on it. Real, observable, and unattributable — the drop is
+   * the receipt for CONTRACT.md rule 1, not a failure.
+   */
+  for (const ev of seen) {
+    const id = ev.data?.media_id;
+    if (ev.data?.autoplay_attr !== true) continue;
+    if (byMedia.has(id)) continue;
+    if (!played.has(id)) continue;
+
+    dropped.push(
+      makeDropped(
+        MECHANISM,
+        'no resolvable node',
+        `<${ev.data?.tag ?? 'video'} autoplay> on media ${id} began playing with no ` +
+          `script involved — the mechanic is in the markup and has no call site to cite`
+      )
     );
   }
 
@@ -155,4 +201,4 @@ export function detect(events, options) {
   return analyse(events, options).findings;
 }
 
-export default { detect, analyse, MECHANISM };
+export default { detect, analyse, MECHANISM, classifyActivation };

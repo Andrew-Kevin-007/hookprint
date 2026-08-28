@@ -23,6 +23,31 @@
  * number can be checked rather than taken on trust.
  *
  * ---------------------------------------------------------------------------
+ * TWO PLACES TO MEASURE, AND WHY BOTH
+ * ---------------------------------------------------------------------------
+ * EVENTS.md names the primary signal precisely:
+ *
+ *   "the signal is variance in `delay_ms` across `timer.schedule` events
+ *    sharing one `site_key` — a self-rescheduling `setTimeout` chain. It is
+ *    *not* variance in `drift_ms`, which is just event-loop noise and will
+ *    make every busy site look positive."
+ *
+ * That is `analyseSchedules` below, and it is the better measurement: the
+ * requested delay is the page's own intent, immune to network latency, to
+ * event-loop pressure, and to a backgrounded tab. Its evidence binding is also
+ * exact — the schedule call *is* the line.
+ *
+ * `analyseRequests` measures the observed gaps between refetches of one
+ * endpoint. It is kept because it is the only thing that works when the
+ * refetch is driven by something other than a patched timer, and because it
+ * measures what actually reached the network rather than what was intended.
+ * It is noisier, which is why both dispersion statistics have to clear their
+ * thresholds before it says anything.
+ *
+ * A site reported by the schedule path is not reported again by the request
+ * path. One mechanic, one finding.
+ *
+ * ---------------------------------------------------------------------------
  * WHY TWO STATISTICS AND NOT ONE
  * ---------------------------------------------------------------------------
  * Coefficient of variation alone is not honest here. A perfectly regular
@@ -35,7 +60,7 @@
  * spread throughout registers. Both numbers ship in the metrics.
  */
 
-import { EVENT_TYPES } from './schema.js';
+import { EVENT, siteOf, siteKey } from './schema.js';
 import {
   createIdAllocator,
   makeFinding,
@@ -106,7 +131,7 @@ export function collapseBursts(group, windowMs = BURST_COALESCE_MS) {
     if (prev && ev.t - prev.t < windowMs) {
       // Keep whichever member of the burst has a usable call site, so a
       // fan-out does not lose the evidence along with the duplicates.
-      if (!prev.site && ev.site) out[out.length - 1] = ev;
+      if (!siteOf(prev) && siteOf(ev)) out[out.length - 1] = ev;
       continue;
     }
     out.push(ev);
@@ -114,17 +139,97 @@ export function collapseBursts(group, windowMs = BURST_COALESCE_MS) {
   return out;
 }
 
+/** Both dispersion measures, plus the verdict and the confidence they support. */
+function dispersion(samples) {
+  const cv = coefficientOfVariation(samples);
+  const robust = robustDispersion(samples);
+  return {
+    cv,
+    robust,
+    qualifies: cv >= CV_THRESHOLD && robust >= ROBUST_THRESHOLD,
+    firm: cv >= CV_HIGH && robust >= ROBUST_HIGH && samples.length >= INTERVALS_HIGH
+  };
+}
+
+/** The wording CONTRACT.md prescribes, in the one place it is produced. */
+function signalClause(cv) {
+  return (
+    `(coefficient of variation ${round(cv, 2)}) — variable-interval event timing, ` +
+    `a behavioural signal consistent with a variable-ratio reward schedule`
+  );
+}
+
 /**
- * @param {import('./schema.js').HookEvent[]} events
- * @param {{nextId?: () => string}} [options]
- * @returns {{findings: Object[], dropped: Object[]}}
+ * Primary path — dispersion of requested `delay_ms` at one `timer.schedule`
+ * site. EVENTS.md's named signal for this mechanic.
+ *
+ * @returns {{findings: Object[], dropped: Object[], claimedSites: Set<string>}}
  */
-export function analyse(events, options = {}) {
-  const nextId = options.nextId ?? createIdAllocator();
+function analyseSchedules(events, nextId) {
+  const findings = [];
+  const claimedSites = new Set();
+
+  const bySite = new Map();
+  for (const ev of eventsOfType(events, EVENT.TIMER_SCHEDULE)) {
+    // A self-rescheduling chain is a run of one-shot timeouts. A `setInterval`
+    // has a single fixed delay by construction and cannot vary.
+    if (ev.data?.repeating === true) continue;
+    const delay = Number(ev.data?.delay_ms);
+    if (!Number.isFinite(delay) || delay <= 0) continue;
+
+    const key = siteKey(siteOf(ev));
+    if (!key) continue; // unresolved schedules are handled by the request path
+
+    if (!bySite.has(key)) bySite.set(key, []);
+    bySite.get(key).push(ev);
+  }
+
+  for (const [key, schedules] of bySite) {
+    const delays = schedules.map((ev) => Number(ev.data.delay_ms));
+    if (delays.length < MIN_INTERVALS + 1) continue;
+
+    const stat = dispersion(delays);
+    if (!stat.qualifies) continue;
+
+    const site = siteOf(schedules[0]);
+    claimedSites.add(key);
+
+    findings.push(
+      makeFinding({
+        id: nextId(),
+        mechanism: MECHANISM,
+        confidence: stat.firm ? 'high' : 'medium',
+        site,
+        summary:
+          `${delays.length} timers scheduled from one line at delays ranging ` +
+          `${round(Math.min(...delays) / 1000, 1)}s to ${round(Math.max(...delays) / 1000, 1)}s ` +
+          signalClause(stat.cv),
+        metrics: {
+          measured: 'timer.schedule delay_ms',
+          call_site: key,
+          schedules: delays.length,
+          coefficient_of_variation: round(stat.cv, 3),
+          robust_dispersion: round(stat.robust, 3),
+          median_delay_ms: Math.round(median(delays)),
+          min_delay_ms: Math.round(Math.min(...delays)),
+          max_delay_ms: Math.round(Math.max(...delays))
+        }
+      })
+    );
+  }
+
+  return { findings, claimedSites };
+}
+
+/**
+ * Secondary path — dispersion of observed gaps between refetches of one
+ * endpoint. Catches refetch loops the timer path cannot see.
+ */
+function analyseRequests(events, nextId, claimedSites) {
   const findings = [];
   const dropped = [];
 
-  const requests = eventsOfType(events, EVENT_TYPES.NET_REQUEST);
+  const requests = eventsOfType(events, EVENT.NET_REQUEST);
   if (requests.length < MIN_INTERVALS + 1) return { findings, dropped };
 
   const byEndpoint = new Map();
@@ -139,21 +244,25 @@ export function analyse(events, options = {}) {
     const gaps = intervals(group.map((ev) => ev.t));
     if (gaps.length < MIN_INTERVALS) continue;
 
-    const cv = coefficientOfVariation(gaps);
-    const robust = robustDispersion(gaps);
+    const stat = dispersion(gaps);
 
     // A fixed or near-fixed schedule stops here. This is the normal case and
     // it is meant to be the normal case.
-    if (cv < CV_THRESHOLD || robust < ROBUST_THRESHOLD) continue;
+    if (!stat.qualifies) continue;
 
     const { site, share } = modalSite(group);
+
+    // Already reported against the line that scheduled it. Reporting the same
+    // mechanic twice would double-count it in the UI.
+    if (site && claimedSites.has(siteKey(site))) continue;
+
     if (!site || share < MIN_SITE_SHARE) {
       dropped.push(
         makeDropped(
           MECHANISM,
           site ? 'no dominant call site' : 'no resolvable node',
           `${group.length} refetches of ${endpoint} with dispersed intervals ` +
-            `(cv ${round(cv, 2)}, robust ${round(robust, 2)}), but ` +
+            `(cv ${round(stat.cv, 2)}, robust ${round(stat.robust, 2)}), but ` +
             (site
               ? `no single call site accounted for more than ${Math.round(share * 100)}% of them`
               : 'no stack frame resolved to page JavaScript')
@@ -162,9 +271,6 @@ export function analyse(events, options = {}) {
       continue;
     }
 
-    const firm = cv >= CV_HIGH && robust >= ROBUST_HIGH && gaps.length >= INTERVALS_HIGH;
-    const confidence = firm ? 'high' : 'medium';
-
     const minGap = Math.min(...gaps);
     const maxGap = Math.max(...gaps);
 
@@ -172,20 +278,20 @@ export function analyse(events, options = {}) {
       makeFinding({
         id: nextId(),
         mechanism: MECHANISM,
-        confidence,
+        confidence: stat.firm ? 'high' : 'medium',
         site,
         summary:
           `${group.length} refetches of ${endpoint} at gaps ranging ` +
           `${round(minGap / 1000, 1)}s to ${round(maxGap / 1000, 1)}s ` +
-          `(coefficient of variation ${round(cv, 2)}) — variable-interval event timing, ` +
-          `a behavioural signal consistent with a variable-ratio reward schedule`,
+          signalClause(stat.cv),
         metrics: {
+          measured: 'net.request inter-arrival',
           endpoint,
           refetches: group.length,
           requests_observed: burstyGroup.length,
           intervals: gaps.length,
-          coefficient_of_variation: round(cv, 3),
-          robust_dispersion: round(robust, 3),
+          coefficient_of_variation: round(stat.cv, 3),
+          robust_dispersion: round(stat.robust, 3),
           median_interval_ms: Math.round(median(gaps)),
           min_interval_ms: Math.round(minGap),
           max_interval_ms: Math.round(maxGap),
@@ -196,6 +302,23 @@ export function analyse(events, options = {}) {
   }
 
   return { findings, dropped };
+}
+
+/**
+ * @param {import('./schema.js').HookEvent[]} events  validated, seq-ordered
+ * @param {{nextId?: () => string}} [options]
+ * @returns {{findings: Object[], dropped: Object[]}}
+ */
+export function analyse(events, options = {}) {
+  const nextId = options.nextId ?? createIdAllocator();
+
+  const scheduled = analyseSchedules(events, nextId);
+  const observed = analyseRequests(events, nextId, scheduled.claimedSites);
+
+  return {
+    findings: [...scheduled.findings, ...observed.findings],
+    dropped: observed.dropped
+  };
 }
 
 /**

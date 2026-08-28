@@ -8,7 +8,7 @@
  * mechanic.
  */
 
-import { isResolvedSite, siteKey, isConfirmation, EVENT_TYPES } from './schema.js';
+import { EVENT, isResolvedSite, siteKey, siteOf, toEvidence } from './schema.js';
 
 /** CONTRACT.md — allowed `mechanism` values. Frozen. */
 export const MECHANISMS = Object.freeze([
@@ -60,7 +60,12 @@ export function createIdAllocator(start = 1) {
  * a detector, and the tests must see it. `runDetectors` catches so a detector
  * bug can never escape into the host page (ARCHITECTURE.md rule 1).
  *
- * @returns {Object} Finding
+ * `evidence.snippet` is deliberately absent. EVENTS.md §"The detector
+ * interface": the MAIN world cannot read cross-origin script source, so
+ * `worker.js` resolves the snippet and writes it in before the Manifest ships.
+ * A snippet invented here would be a fabricated quotation of someone's code.
+ *
+ * @returns {Object} Finding, minus `evidence.snippet`
  */
 export function makeFinding({ id, mechanism, confidence, site, summary, metrics }) {
   if (!MECHANISMS.includes(mechanism)) {
@@ -74,17 +79,12 @@ export function makeFinding({ id, mechanism, confidence, site, summary, metrics 
   }
 
   const action = SUPPORTED_ACTIONS[mechanism];
-  const finding = {
+  return {
     id,
     mechanism,
     display_name: DISPLAY_NAMES[mechanism] ?? mechanism,
     confidence,
-    evidence: {
-      file: site.file,
-      line: site.line,
-      column: site.column,
-      snippet: typeof site.snippet === 'string' ? site.snippet : ''
-    },
+    evidence: toEvidence(site),
     observed: {
       summary,
       metrics: metrics ?? {}
@@ -93,7 +93,6 @@ export function makeFinding({ id, mechanism, confidence, site, summary, metrics 
       ? { supported: true, label: action.label, action_id: action.action_id }
       : { supported: false } // no label, no action_id — CONTRACT.md field rules
   };
-  return finding;
 }
 
 /**
@@ -114,30 +113,9 @@ export function eventsOfType(events, type) {
   return events.filter((e) => e.type === type);
 }
 
-/** Confirmation gestures (click/key/tap — never scroll). See schema.js. */
-export function confirmations(events) {
-  return events.filter(isConfirmation);
-}
-
-/** True if any confirmation gesture happened in the half-open window [from, to). */
-export function hasConfirmationBetween(events, from, to) {
-  return events.some((e) => isConfirmation(e) && e.t >= from && e.t < to);
-}
-
-/** Most recent confirmation strictly before `t`, or null. */
-export function lastConfirmationBefore(events, t) {
-  let best = null;
-  for (const e of events) {
-    if (e.t < t && isConfirmation(e)) {
-      if (!best || e.t > best.t) best = e;
-    }
-  }
-  return best;
-}
-
 /** Events of `type` within the inclusive window [from, to]. */
-export function eventsInWindow(events, type, from, to) {
-  return events.filter((e) => e.type === type && e.t >= from && e.t <= to);
+export function eventsInWindow(events, from, to) {
+  return events.filter((e) => e.t >= from && e.t <= to);
 }
 
 /**
@@ -148,7 +126,8 @@ export function eventsInWindow(events, type, from, to) {
  */
 export function pickEvidence(...candidateEvents) {
   for (const ev of candidateEvents.flat()) {
-    if (ev && isResolvedSite(ev.site)) return ev.site;
+    const site = siteOf(ev);
+    if (site) return site;
   }
   return null;
 }
@@ -162,10 +141,11 @@ export function modalSite(events) {
   const buckets = new Map();
   let resolved = 0;
   for (const ev of events) {
-    const key = siteKey(ev.site);
+    const site = siteOf(ev);
+    const key = siteKey(site);
     if (!key) continue;
     resolved += 1;
-    const bucket = buckets.get(key) ?? { site: ev.site, count: 0 };
+    const bucket = buckets.get(key) ?? { site, count: 0 };
     bucket.count += 1;
     buckets.set(key, bucket);
   }
@@ -176,6 +156,56 @@ export function modalSite(events) {
     if (!best || bucket.count > best.count) best = bucket;
   }
   return { site: best.site, share: best.count / events.length, resolved };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Harness self-reporting                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Exact counts of events the harness dropped under budget.
+ *
+ * EVENTS.md §`harness.throttle`: "The counts here are exact even though the
+ * events are gone — use them for `observed.metrics` rather than counting
+ * events you can see." A metric built from visible events alone silently
+ * understates a busy page, and understating is still misreporting.
+ *
+ * @returns {{total: number, byType: Map<string, number>, bySite: Map<string, number>}}
+ */
+export function throttleCounts(events) {
+  const byType = new Map();
+  const bySite = new Map();
+  let total = 0;
+
+  for (const ev of eventsOfType(events, EVENT.HARNESS_THROTTLE)) {
+    for (const entry of ev.data?.entries ?? []) {
+      const n = Number(entry?.suppressed);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      total += n;
+      if (entry.type) byType.set(entry.type, (byType.get(entry.type) ?? 0) + n);
+      if (entry.site_key) bySite.set(entry.site_key, (bySite.get(entry.site_key) ?? 0) + n);
+    }
+  }
+  return { total, byType, bySite };
+}
+
+/**
+ * How many times a kill switch withheld activity we would otherwise have seen.
+ *
+ * EVENTS.md §`kill.*`: "A detector must not count suppressed activity as
+ * observed activity." Once a switch is armed a count stops rising because we
+ * stopped it, not because the site stopped — reporting the lower number as an
+ * observation would credit the site for our own intervention.
+ */
+export function suppressionCounts(events) {
+  const byAction = new Map();
+  let total = 0;
+  for (const ev of eventsOfType(events, EVENT.KILL_SUPPRESSED)) {
+    const id = ev.data?.action_id ?? 'unknown';
+    byAction.set(id, (byAction.get(id) ?? 0) + 1);
+    total += 1;
+  }
+  return { total, byAction };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -240,4 +270,4 @@ export function round(x, places = 3) {
   return Math.round(x * f) / f;
 }
 
-export { EVENT_TYPES };
+export { EVENT, siteOf, siteKey, isResolvedSite };

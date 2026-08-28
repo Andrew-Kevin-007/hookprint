@@ -2,110 +2,160 @@
  * HOOKPRINT — infinite scroll detector.
  *
  * ---------------------------------------------------------------------------
- * WHY THIS GENERALISES
+ * THE CHAIN, VERBATIM FROM EVENTS.md
  * ---------------------------------------------------------------------------
- * This detector does not look for `IntersectionObserver`, and it does not look
- * for a scroll listener. It looks for a causal chain:
+ *   `observer.observe` on a low-`target_count` sentinel
+ *     -> `observer.fire` with `isIntersecting: true`
+ *     -> a `net.request` attributable to that observer's callback
+ *     -> `dom.mutation_digest` showing `scroll_height` growth
  *
- *     a viewport-position signal  →  content grew  →  and the user never
- *                                                     confirmed anything
+ *   Evidence line = the `site` of the `observer.observe`.
  *
- * `IntersectionObserver` firing on a bottom sentinel and a `scroll` handler
- * measuring `scrollHeight` are two ways of producing the same viewport signal.
- * Once both are normalised into one `viewportSignals` list, the rest of the
- * detector cannot tell them apart — which is exactly why it catches both, and
- * why a third implementation (scrollend, a virtualised list's own rAF loop,
- * ResizeObserver on a growing container) costs one line in `collectSignals`
- * rather than a new detector.
+ * Before EVENTS.md existed this file paired a viewport signal with anything
+ * that happened within 2500 ms of it. That is a coincidence detector. The
+ * causal join replaces it: a request is counted only when the harness says it
+ * was issued *inside* the observer's own callback. A "Load more" button that
+ * fetches and appends the identical content is not attributed to any observer,
+ * so it never enters the count — the discriminator is structural now rather
+ * than a timing heuristic.
  *
- * The negative case is load-bearing. A page with a real "Next page" button
- * produces the same fetch and the same append — the *only* difference is a
- * confirmation gesture sitting between the signal and the load. That single
- * discriminator is what keeps an honest paginated page at zero findings.
+ * `target_count` is the second guard. EVENTS.md: it "counts how many nodes
+ * this observer has been given in total, so you can tell a single sentinel
+ * from a lazy-image observer watching 200 nodes. That distinction is what
+ * stops us calling every `IntersectionObserver` infinite scroll."
  *
- * Deliberately NOT treated as confirmation: scrolling and wheel. See schema.js.
+ * ---------------------------------------------------------------------------
+ * TWO HARNESS v1 LIMITS THAT SHAPE THIS FILE — see the run report
+ * ---------------------------------------------------------------------------
+ * 1. **`cause` is always `null` in harness v1.** Every `emit()` call site in
+ *    `instrument.js` passes an explicit `null` as `causeOverride`, and
+ *    `emitRaw` treats that as "no cause" rather than "compute one", so
+ *    `currentCause()` is never reached. The documented join is therefore
+ *    unavailable today. Rather than ignore `cause` (a silent workaround) or
+ *    give up (no detection at all), `attributeRequests` prefers the documented
+ *    join and falls back to `seq` adjacency, which is sound for a different
+ *    reason: the harness runs the page's callback to completion *before* it
+ *    emits `observer.fire`, and `seq` is assigned synchronously, so requests
+ *    issued inside that callback occupy a contiguous `seq` run immediately
+ *    below the fire. The fallback is weaker evidence and is reported as such —
+ *    it caps confidence at `medium` and is named in `observed.metrics`.
+ *
+ * 2. **There is no user-gesture signal at all.** `addEventListener` is not
+ *    patched, and `cause.type === "event"` is never produced. EVENTS.md says
+ *    of `user_confirmations`: "Count it; do not assume zero." We cannot count
+ *    it, so we do not publish a number for it. Printing `0` would present an
+ *    unmeasured quantity as a measurement, and `observed` means measured.
+ *
+ * A scroll-listener implementation of the same mechanic (no
+ * `IntersectionObserver` anywhere) is invisible to harness v1 and is NOT
+ * reported. Without a gesture signal it is indistinguishable from ordinary
+ * click-driven pagination, and guessing between them is exactly the false
+ * positive the control page exists to catch.
  */
 
-import { EVENT_TYPES } from './schema.js';
+import { EVENT, CAUSE, causedBy, siteOf, gestureSignalAvailable } from './schema.js';
 import {
   createIdAllocator,
   makeFinding,
   makeDropped,
   eventsOfType,
-  eventsInWindow,
-  hasConfirmationBetween,
-  lastConfirmationBefore,
-  confirmations,
-  pickEvidence,
-  modalSite
+  throttleCounts,
+  suppressionCounts
 } from './util.js';
 
 const MECHANISM = 'infinite_scroll';
 
-/** Longest plausible delay from viewport signal to the content it caused. */
-const LOAD_WINDOW_MS = 2500;
-
 /**
- * A confirmation this recently before a viewport signal probably caused the
- * load that follows (user clicks "Next", the click also scrolls the page).
- * Both this and the between-signal-and-load check must pass.
+ * An observer watching more nodes than this is a lazy-loader or a viewability
+ * tracker, not a bottom sentinel. A sentinel is one node; two allows for a
+ * top-and-bottom pair.
  */
-const CONFIRMATION_LOOKBACK_MS = 1500;
+const MAX_SENTINEL_TARGETS = 3;
 
-/** Signals closer together than this are the same scroll gesture, not two loads. */
-const SIGNAL_COALESCE_MS = 400;
+/** How long after the trigger the content it loaded may take to land. */
+const GROWTH_WINDOW_MS = 2500;
+
+/** Upper bound on the `seq` walk-back. A callback issuing more than this many requests is a fan-out, not a page load. */
+const MAX_SEQ_WALKBACK = 8;
 
 /** One unattributed load is a coincidence. Two is a mechanic. */
-const MIN_STRONG_PAIRS = 2;
+const MIN_CHAINS = 2;
 
 /**
- * Every event type that means "the viewport told the page where it is".
- * Add implementations here; nothing downstream needs to know.
+ * Sentinel observers, keyed by `observer_id`.
+ * The `observer.observe` event is kept whole because its `site` is the
+ * evidence line EVENTS.md prescribes.
  */
-function collectSignals(events) {
-  const signals = [];
+function collectSentinels(events) {
+  const sentinels = new Map();
+  for (const ev of eventsOfType(events, EVENT.OBSERVER_OBSERVE)) {
+    if (ev.data?.api !== 'IntersectionObserver') continue;
 
-  for (const ev of events) {
-    if (ev.type === EVENT_TYPES.OBSERVER_FIRE) {
-      // Only an intersection *entering* view is a bottom-sentinel signal.
-      // `isIntersecting: false` is the sentinel leaving, and means nothing.
-      if (ev.data?.isIntersecting === false) continue;
-      signals.push({ event: ev, impl: 'intersection_observer' });
-    } else if (ev.type === EVENT_TYPES.LISTENER_FIRE) {
-      const name = String(ev.data?.event ?? ev.data?.kind ?? '').toLowerCase();
-      if (name === 'scroll' || name === 'scrollend' || name === 'wheel') {
-        signals.push({ event: ev, impl: 'scroll_listener' });
-      }
+    const id = ev.data.observer_id;
+    const targets = Number(ev.data.target_count);
+
+    // `target_count` is cumulative, so re-observing pushes it up. Keep the
+    // highest seen: an observer that ends up watching 200 nodes was never a
+    // sentinel, even if its first observe() call looked like one.
+    const prior = sentinels.get(id);
+    const count = Math.max(Number.isFinite(targets) ? targets : 1, prior?.targets ?? 0);
+
+    if (count > MAX_SENTINEL_TARGETS) {
+      sentinels.delete(id);
+      continue;
     }
+    if (!prior) sentinels.set(id, { observeEvent: ev, targets: count });
+    else prior.targets = count;
   }
-
-  signals.sort((a, b) => a.event.t - b.event.t);
-
-  // Scroll handlers fire dozens of times per gesture. Coalesce, or one
-  // scroll-to-bottom would be counted as forty separate "auto loads".
-  const coalesced = [];
-  for (const sig of signals) {
-    const prev = coalesced[coalesced.length - 1];
-    if (prev && sig.impl === prev.impl && sig.event.t - prev.event.t < SIGNAL_COALESCE_MS) continue;
-    coalesced.push(sig);
-  }
-  return coalesced;
+  return sentinels;
 }
 
-/** The page's own registration of the mechanic — the best line to show. */
-function collectRegistrations(events) {
-  const io = eventsOfType(events, EVENT_TYPES.OBSERVER_REGISTER);
-  const listeners = eventsOfType(events, EVENT_TYPES.LISTENER_ADD).filter((ev) => {
-    const name = String(ev.data?.event ?? ev.data?.kind ?? '').toLowerCase();
-    return name === 'scroll' || name === 'scrollend' || name === 'wheel';
-  });
-  return { io, listeners };
+/** An IntersectionObserver fire carrying at least one entry entering view. */
+function isEnteringView(fire) {
+  const entries = fire.data?.entries;
+  if (!Array.isArray(entries)) return false;
+  return entries.some((e) => e?.isIntersecting === true);
 }
 
 /**
- * Full analysis. `detect` is the thin wrapper with the agreed signature.
+ * The requests this observer callback issued.
  *
- * @param {import('./schema.js').HookEvent[]} events  normalised, time-ordered
+ * Preferred: the documented causal join. Fallback: `seq` adjacency, which
+ * holds because `instrument.js` emits `observer.fire` only after the page's
+ * callback has returned, and `seq` is handed out synchronously.
+ *
+ * @returns {{requests: Object[], attribution: "cause"|"seq_adjacency"}}
+ */
+function attributeRequests(events, fireIndex, observerId) {
+  const fire = events[fireIndex];
+
+  const byCause = events.filter(
+    (ev) => ev.type === EVENT.NET_REQUEST && causedBy(ev, CAUSE.OBSERVER, observerId)
+  );
+  if (byCause.length > 0) return { requests: byCause, attribution: 'cause' };
+
+  const adjacent = [];
+  for (let i = fireIndex - 1; i >= 0 && adjacent.length < MAX_SEQ_WALKBACK; i -= 1) {
+    if (events[i].type !== EVENT.NET_REQUEST) break;
+    adjacent.unshift(events[i]);
+  }
+  // A request that a kill switch blocked is not activity the site performed.
+  const performed = adjacent.filter((ev) => ev.data?.blocked !== true && ev.t <= fire.t);
+  return { requests: performed, attribution: 'seq_adjacency' };
+}
+
+/** Did the document actually get taller in the window after this trigger? */
+function growthAfter(digests, from) {
+  return digests.find(
+    (d) =>
+      d.t >= from &&
+      d.t <= from + GROWTH_WINDOW_MS &&
+      Number(d.data?.scroll_height_delta) > 0
+  );
+}
+
+/**
+ * @param {import('./schema.js').HookEvent[]} events  validated, seq-ordered
  * @param {{nextId?: () => string}} [options]
  * @returns {{findings: Object[], dropped: Object[]}}
  */
@@ -114,115 +164,107 @@ export function analyse(events, options = {}) {
   const findings = [];
   const dropped = [];
 
-  const signals = collectSignals(events);
-  if (signals.length === 0) return { findings, dropped };
+  const sentinels = collectSentinels(events);
+  if (sentinels.size === 0) return { findings, dropped };
 
-  const appends = eventsOfType(events, EVENT_TYPES.DOM_APPEND);
-  const requests = eventsOfType(events, EVENT_TYPES.NET_REQUEST);
-  const gestures = confirmations(events);
+  const digests = eventsOfType(events, EVENT.DOM_MUTATION_DIGEST);
 
-  /** @type {Array<{signal: Object, appends: Object[], requests: Object[], strong: boolean}>} */
-  const autoPairs = [];
-  let confirmedPairs = 0;
+  /** @type {Map<number|string, {chains: Object[], attributions: Set<string>, triggers: number}>} */
+  const perObserver = new Map();
 
-  for (const sig of signals) {
-    const from = sig.event.t;
-    const to = from + LOAD_WINDOW_MS;
+  events.forEach((ev, index) => {
+    if (ev.type !== EVENT.OBSERVER_FIRE) return;
+    if (ev.data?.api !== 'IntersectionObserver') return;
 
-    const windowAppends = eventsInWindow(appends, EVENT_TYPES.DOM_APPEND, from, to);
-    const windowRequests = eventsInWindow(requests, EVENT_TYPES.NET_REQUEST, from, to);
-    if (windowAppends.length === 0 && windowRequests.length === 0) continue;
+    const id = ev.data.observer_id;
+    if (!sentinels.has(id)) return;
+    if (!isEnteringView(ev)) return; // the sentinel leaving view means nothing
 
-    // Guard 1 — a confirmation between the signal and what it produced means
-    // the user authorised the load. This is the paginated-page case.
-    const loadAt = Math.min(
-      ...[...windowAppends, ...windowRequests].map((e) => e.t)
-    );
-    if (hasConfirmationBetween(gestures, from, loadAt + 1)) {
-      confirmedPairs += 1;
+    const state = perObserver.get(id) ?? { chains: [], attributions: new Set(), triggers: 0 };
+    state.triggers += 1;
+    perObserver.set(id, state);
+
+    const { requests, attribution } = attributeRequests(events, index, id);
+    if (requests.length === 0) return;
+
+    const grew = growthAfter(digests, ev.t);
+    if (!grew) return; // a fetch that did not grow the page is not this mechanic
+
+    state.attributions.add(attribution);
+    state.chains.push({ fire: ev, requests, growth: grew });
+  });
+
+  const throttled = throttleCounts(events);
+  const suppressed = suppressionCounts(events);
+  const gesturesVisible = gestureSignalAvailable(events);
+
+  for (const [id, state] of perObserver) {
+    if (state.chains.length < MIN_CHAINS) continue;
+
+    const { observeEvent, targets } = sentinels.get(id);
+    const site = siteOf(observeEvent);
+
+    if (!site) {
+      dropped.push(
+        makeDropped(
+          MECHANISM,
+          'no resolvable node',
+          `${state.chains.length} automatic content loads observed via IntersectionObserver ` +
+            `${id}, but the observe() call site did not resolve to page JavaScript`
+        )
+      );
       continue;
     }
 
-    // Guard 2 — a confirmation immediately *before* the signal probably caused
-    // both the scroll and the load (click a button, page jumps, content loads).
-    const prior = lastConfirmationBefore(gestures, from);
-    if (prior && from - prior.t <= CONFIRMATION_LOOKBACK_MS) {
-      confirmedPairs += 1;
-      continue;
-    }
+    // The documented causal join is strong evidence; seq adjacency is an
+    // inference. An inference does not get to be "high".
+    const proven = state.attributions.has('cause');
+    const autoLoads = state.chains.length;
+    const confidence = proven && autoLoads >= 3 ? 'high' : 'medium';
 
-    autoPairs.push({
-      signal: sig,
-      appends: windowAppends,
-      requests: windowRequests,
-      // Content actually grew. A bare network request could be an analytics
-      // beacon fired on scroll, which is not this mechanic.
-      strong: windowAppends.length > 0
-    });
-  }
-
-  const strongPairs = autoPairs.filter((p) => p.strong);
-  const weakPairs = autoPairs.filter((p) => !p.strong);
-
-  const qualifies =
-    strongPairs.length >= MIN_STRONG_PAIRS || (strongPairs.length >= 1 && weakPairs.length >= 2);
-  if (!qualifies) return { findings, dropped };
-
-  const impls = [...new Set(autoPairs.map((p) => p.signal.impl))];
-  const { io, listeners } = collectRegistrations(events);
-
-  // Evidence preference, best line first:
-  //   1. the page's registration of the mechanic  (`observer.observe(sentinel)`)
-  //   2. the callback that actually fired
-  //   3. the append that grew the page
-  const site =
-    pickEvidence(
-      impls.includes('intersection_observer') ? io : [],
-      impls.includes('scroll_listener') ? listeners : [],
-      io,
-      listeners,
-      autoPairs.map((p) => p.signal.event),
-      strongPairs.flatMap((p) => p.appends)
-    ) ?? modalSite(autoPairs.map((p) => p.signal.event)).site;
-
-  if (!site) {
-    dropped.push(
-      makeDropped(
-        MECHANISM,
-        'no resolvable node',
-        `${autoPairs.length} automatic content loads observed, but no stack frame resolved to page JavaScript`
-      )
+    const scrollGain = state.chains.reduce(
+      (acc, c) => acc + Number(c.growth.data.scroll_height_delta || 0),
+      0
     );
-    return { findings, dropped };
+
+    /**
+     * `user_confirmations` is deliberately absent, not zero — harness v1
+     * emits no gesture signal, so the quantity was not measured. The marker
+     * says so in the payload rather than only in this comment.
+     */
+    const metrics = {
+      auto_loads: autoLoads,
+      viewport_triggers: state.triggers,
+      requests_issued: state.chains.reduce((acc, c) => acc + c.requests.length, 0),
+      scroll_height_gain_px: scrollGain,
+      observer_id: id,
+      sentinel_target_count: targets,
+      attribution: proven ? 'cause' : 'seq_adjacency',
+      user_confirmation_signal: gesturesVisible ? 'available' : 'unavailable in harness v1'
+    };
+    if (gesturesVisible) {
+      metrics.user_confirmations = state.chains.filter((c) =>
+        c.requests.some((r) => causedBy(r, CAUSE.EVENT))
+      ).length;
+    }
+    if (throttled.total > 0) metrics.events_suppressed_by_harness = throttled.total;
+    if (suppressed.total > 0) metrics.loads_withheld_by_kill_switch = suppressed.total;
+
+    findings.push(
+      makeFinding({
+        id: nextId(),
+        mechanism: MECHANISM,
+        confidence,
+        site,
+        summary:
+          `${autoLoads} content load${autoLoads === 1 ? '' : 's'} ran from an ` +
+          `IntersectionObserver callback on a ${targets}-node sentinel, ` +
+          `each followed by the page growing (${scrollGain}px total)` +
+          (gesturesVisible ? '' : '; user confirmation was not observable in this session'),
+        metrics
+      })
+    );
   }
-
-  const autoLoads = strongPairs.length;
-  const confidence = autoLoads >= 3 ? 'high' : 'medium';
-
-  const implLabel = impls
-    .map((i) => (i === 'intersection_observer' ? 'IntersectionObserver' : 'scroll listener'))
-    .join(' + ');
-
-  findings.push(
-    makeFinding({
-      id: nextId(),
-      mechanism: MECHANISM,
-      confidence,
-      site,
-      summary:
-        `${autoLoads} automatic content load${autoLoads === 1 ? '' : 's'}, ` +
-        `0 user-confirmation events between the viewport signal and the load ` +
-        `(via ${implLabel})`,
-      metrics: {
-        auto_loads: autoLoads,
-        user_confirmations: 0,
-        confirmed_loads: confirmedPairs,
-        network_only_triggers: weakPairs.length,
-        viewport_signals: signals.length,
-        implementations: impls
-      }
-    })
-  );
 
   return { findings, dropped };
 }

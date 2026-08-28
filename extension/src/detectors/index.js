@@ -1,12 +1,21 @@
 /**
  * HOOKPRINT — detector entry point.
  *
- * Takes raw events from the instrumentation harness and produces one Manifest
- * exactly as CONTRACT.md specifies. This is the only function the service
- * worker needs to call.
+ * The seam `worker.js` calls, exactly as EVENTS.md §"The detector interface"
+ * specifies:
  *
- *     import { runDetectors } from './detectors/index.js';
- *     const manifest = runDetectors(rawEvents, { url: location.href });
+ *     export function runDetectors(events, ctx)
+ *       -> { findings: [ Finding, minus evidence.snippet ],
+ *            dropped:  [ { proposed_mechanism, reason } ] }
+ *
+ * `ctx` is `{ session_id, url, t0_epoch_ms, duration_ms, truncated }`.
+ * `url` and `scanned_at` are also returned so the module produces a complete
+ * `CONTRACT.md` Manifest when run standalone (tests, the CLI, a replayed
+ * capture). `worker.js` builds its own Manifest and ignores them.
+ *
+ * **Detectors are pure.** No DOM, no `chrome.*`, no network, no clock beyond
+ * the `scanned_at` stamp. Same array in, same result out — that is what makes
+ * them testable against a fixture without a browser.
  *
  * Every detector runs inside try/catch. A bug in one detector produces a
  * `dropped` entry naming it and the rest of the scan still completes —
@@ -14,7 +23,7 @@
  * take anything else down with it.
  */
 
-import { normalizeEvents } from './schema.js';
+import { normalizeEvents, foreignVersions, SCHEMA_VERSION } from './schema.js';
 import { createIdAllocator, makeDropped } from './util.js';
 
 import infiniteScroll from './infinite-scroll.js';
@@ -29,18 +38,40 @@ export const DETECTORS = Object.freeze([
   variableInterval
 ]);
 
+/** EVENTS.md: a truncated session means every count is a floor, not a total. */
+const TRUNCATION_NOTE = ' (session truncated at the event cap; counts are a lower bound)';
+
 /**
  * @param {Array<Object>} rawEvents  events as posted by the harness
- * @param {{url?: string, scannedAt?: string, detectors?: Array}} [options]
+ * @param {{session_id?: string, url?: string, t0_epoch_ms?: number,
+ *          duration_ms?: number, truncated?: boolean,
+ *          scannedAt?: string, detectors?: Array}} [ctx]
  * @returns {{url: string, scanned_at: string, findings: Object[], dropped: Object[]}}
  */
-export function runDetectors(rawEvents, options = {}) {
+export function runDetectors(rawEvents, ctx = {}) {
   const events = normalizeEvents(rawEvents);
   const nextId = createIdAllocator();
-  const detectors = options.detectors ?? DETECTORS;
+  const detectors = ctx.detectors ?? DETECTORS;
 
   const findings = [];
   const dropped = [];
+
+  /**
+   * A version skew between harness and detectors otherwise presents as "the
+   * site is clean", which is the most expensive way for this to fail. EVENTS.md
+   * says to refuse loudly; in a pure function, loudly means it reaches the
+   * Manifest where someone will see it.
+   */
+  for (const v of foreignVersions(rawEvents)) {
+    dropped.push(
+      makeDropped(
+        'unknown',
+        'unsupported event schema',
+        `harness emitted schema v${v}; these detectors read v${SCHEMA_VERSION}. ` +
+          `Those events were not analysed.`
+      )
+    );
+  }
 
   for (const detector of detectors) {
     try {
@@ -58,9 +89,13 @@ export function runDetectors(rawEvents, options = {}) {
     }
   }
 
+  if (ctx.truncated) {
+    for (const f of findings) f.observed.summary += TRUNCATION_NOTE;
+  }
+
   return {
-    url: options.url ?? '',
-    scanned_at: options.scannedAt ?? new Date().toISOString(),
+    url: ctx.url ?? '',
+    scanned_at: ctx.scannedAt ?? new Date().toISOString(),
     findings,
     dropped
   };
