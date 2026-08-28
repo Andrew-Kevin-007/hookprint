@@ -667,6 +667,7 @@
 
       var wrapped = function () {
         var id = rec.id;
+        var called = false;          // has the PAGE's callback been entered?
         try {
           rec.iteration++;
           var t = O.now();
@@ -676,6 +677,7 @@
           if (decision === "defer") { holdDeferred(null, function () { try { handler.apply(this, arguments); } catch (e) {} }); return; }
           if (decision === "block") { return; }
           var t1 = O.now();
+          called = true;
           var r = runPage("timer", id, handler, this, arguments);
           emit("timer.fire", {
             api: apiName, timer_id: id, delay_ms: delay, iteration: rec.iteration,
@@ -685,7 +687,13 @@
           if (!repeating) delete timerRecs[id];
           return r;
         } catch (e) {
-          // Instrumentation failed. The page's callback must still run.
+          // The page's OWN callback threw. It has already run once; running it
+          // again here would execute the page's side effects twice and the
+          // error would escape anyway. Propagate unchanged — that is exactly
+          // what an unpatched setTimeout does.
+          if (called) throw e;
+          // Instrumentation failed BEFORE the page's callback was entered.
+          // Rule 2: the page's callback must still run.
           internalError("timer.fire", e);
           return runPage("timer", id, handler, this, arguments);
         }
@@ -726,6 +734,7 @@
 
   function wrapObserverCallback(api, cb, meta) {
     return function (records, observer) {
+      var called = false;          // has the PAGE's callback been entered?
       try {
         meta.fires++;
         var t1 = O.now();
@@ -751,10 +760,14 @@
           if (keep.length !== records.length) records = keep;
         }
 
+        called = true;
         var r = runPage("observer", meta.id, cb, this, [records, observer]);
         emitObserverFire(api, meta, records, +(O.now() - t1).toFixed(2));
         return r;
       } catch (e) {
+        // Same rule as the timer path: if the page's own callback threw, it has
+        // already run. Re-running it would double the page's side effects.
+        if (called) throw e;
         internalError("observer.fire", e);
         return runPage("observer", meta.id, cb, this, [records, observer]);
       }

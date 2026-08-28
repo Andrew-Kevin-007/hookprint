@@ -176,11 +176,21 @@ async function resolveSnippet(evidence) {
  * ===================================================================== */
 
 let detectorsPromise = null;
+let detectorLoadError = null;    // why the seam is empty; "absent" alone is not a diagnosis
 function loadDetectors() {
   if (!detectorsPromise) {
     detectorsPromise = import("./detectors/index.js")
-      .then((m) => (typeof m.runDetectors === "function" ? m : null))
-      .catch(() => null);
+      .then((m) => {
+        if (typeof m.runDetectors === "function") return m;
+        detectorLoadError = "module loaded but exports no runDetectors()";
+        return null;
+      })
+      .catch((e) => {
+        // Swallowing the reason made a real import failure indistinguishable
+        // from "cyborg has not landed detectors yet". Keep it.
+        detectorLoadError = "" + (e && e.message ? e.message : e);
+        return null;
+      });
   }
   return detectorsPromise;
 }
@@ -226,7 +236,11 @@ async function buildManifest(tabId) {
       diagnostics.warnings.push("runDetectors threw: " + (e && e.message ? e.message : e));
     }
   } else {
-    diagnostics.warnings.push("src/detectors/index.js not present — harness is recording, nothing is classifying");
+    diagnostics.detector_load_error = detectorLoadError;
+    diagnostics.warnings.push(
+      "detectors did not load — harness is recording, nothing is classifying" +
+      (detectorLoadError ? " (" + detectorLoadError + ")" : "")
+    );
   }
 
   const findings = [];
@@ -310,7 +324,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender && sender.tab ? sender.tab.id : null;
     if (tabId === null) return;
     ingest(tabId, msg.session_id, msg.url, msg.events || []).catch(() => {});
-    return;    // no response; bridge does not wait
+    // Acknowledge SYNCHRONOUSLY, before the ingest settles. Returning without
+    // calling sendResponse closes the port, which sets chrome.runtime.lastError
+    // in the bridge's callback and made it count every delivered batch as
+    // "dropped" — measured in Chrome 152: forwarded 0 / dropped 387 while the
+    // worker held all 387 events. The ack costs nothing and makes
+    // bridge.stats.forwarded a true delivery count instead of a lie.
+    try { sendResponse({ ok: true, n: (msg.events || []).length }); } catch (e) { /* port already gone */ }
+    return;    // synchronous response; do not return true
   }
 
   (async () => {
@@ -364,6 +385,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ok: true, tab_id: tabId,
             session: st ? { session_id: st.session_id, url: st.url, events: st.events.length, truncated: st.truncated } : null,
             bridge, detectors: mod ? "loaded" : "absent",
+            detector_load_error: mod ? null : detectorLoadError,
             sources_cached: sources.size
           });
         }
