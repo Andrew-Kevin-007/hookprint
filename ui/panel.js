@@ -1,15 +1,22 @@
 /* ── HOOKPRINT — Bill of Materials — panel.js ── */
 
-// Task 5: Expose hook for Kevin's action handler.
-// Kevin replaces onAction with his own implementation.
+// Task 5: Exposed hook for Kevin's real action handler.
 window.HOOKPRINT_UI = {
-  onAction: (action_id) => {
-    // Default no-op placeholder — Kevin will swap this out.
-    console.log('[HOOKPRINT_UI] onAction called with:', action_id);
-  }
+  onAction: (action_id) => { /* Kevin replaces this */ }
 };
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Mechanism icons ───────────────────────────────────────────────────────────
+
+const MECHANISM_ICONS = {
+  infinite_scroll:         '∞',
+  autoplay:                '▶',
+  variable_interval_refetch:'⟳',
+  countdown_timer:         '⏱',
+  scarcity_message:        '⚠',
+  unknown:                 '?',
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
   return String(str)
@@ -19,45 +26,113 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Given a full URL, returns just "filename.js:line"
- * Full URL is preserved in a title attribute for hover.
- */
-function shortLocation(fileUrl, line) {
+/** Returns { dir, filename } split from a URL path */
+function parseFileUrl(fileUrl) {
   try {
-    const path = new URL(fileUrl).pathname;
-    const filename = path.split('/').filter(Boolean).pop() || fileUrl;
-    return { short: `${filename}:${line}`, full: fileUrl };
+    const parts = new URL(fileUrl).pathname.split('/').filter(Boolean);
+    const filename = parts.pop() || fileUrl;
+    const dir = parts.length ? parts.join(' / ') : '';
+    return { dir, filename, full: fileUrl };
   } catch (_) {
-    return { short: `${fileUrl}:${line}`, full: fileUrl };
+    return { dir: '', filename: fileUrl, full: fileUrl };
   }
 }
 
-function formatScannedAt(iso) {
+/** Human-readable "X min ago" from an ISO string */
+function timeAgo(iso) {
   try {
-    const d = new Date(iso);
-    return d.toUTCString().replace('GMT', 'UTC');
-  } catch (_) {
-    return iso;
-  }
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 60)   return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  } catch (_) { return ''; }
 }
 
-// ── Card builder ─────────────────────────────────────────────────────────────
+// ── Toast ─────────────────────────────────────────────────────────────────────
 
-function buildFindingCard(finding) {
+let _toastEl = null;
+
+function showToast(action_id) {
+  if (!_toastEl) return;
+  _toastEl.textContent = `● ${action_id}  — intervention applied`;
+  _toastEl.classList.add('visible');
+}
+
+// ── Copy to clipboard ─────────────────────────────────────────────────────────
+
+function makeCopyBtn(text) {
+  const btn = document.createElement('button');
+  btn.className = 'copy-btn';
+  btn.textContent = 'COPY';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'COPIED';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'COPY';
+        btn.classList.remove('copied');
+      }, 1800);
+    });
+  });
+  return btn;
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+// Maps key index (1-based) → button element
+const _kbdButtons = {};
+
+document.addEventListener('keydown', (e) => {
+  // Ignore if typing in an input
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= 9 && _kbdButtons[n]) {
+    _kbdButtons[n].click();
+  }
+});
+
+// ── Card builder ──────────────────────────────────────────────────────────────
+
+let _actionIndex = 0; // tracks keyboard shortcut numbers
+
+function buildFindingCard(finding, isHighConfidence) {
   const card = document.createElement('div');
-  card.className = 'finding-card';
+  card.className = `finding-card conf-${finding.confidence}`;
   card.dataset.findingId = finding.id;
 
-  // ── Mechanism row ──────────────────────────────────────
+  // ── Mechanism header (clickable to collapse) ──────────────────────────────
   const mechRow = document.createElement('div');
   mechRow.className = 'card-row card-mechanism';
-  mechRow.innerHTML = `
-    <div class="row-label">Mechanism</div>
-    <div class="mechanism-name">${escapeHtml(finding.display_name)}</div>
-  `;
 
-  // ── Confidence row ─────────────────────────────────────
+  const icon = document.createElement('span');
+  icon.className = 'mechanism-icon';
+  icon.textContent = MECHANISM_ICONS[finding.mechanism] || '?';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'mechanism-name';
+  nameEl.textContent = finding.display_name;
+
+  const arrow = document.createElement('span');
+  arrow.className = 'card-collapse-arrow open';
+  arrow.textContent = '▶';
+
+  mechRow.appendChild(icon);
+  mechRow.appendChild(nameEl);
+  mechRow.appendChild(arrow);
+
+  // Card body — collapsed for low confidence by default
+  const body = document.createElement('div');
+  body.className = isHighConfidence ? 'card-body' : 'card-body collapsed';
+  if (!isHighConfidence) arrow.classList.remove('open');
+
+  mechRow.addEventListener('click', () => {
+    const collapsed = body.classList.toggle('collapsed');
+    arrow.classList.toggle('open', !collapsed);
+  });
+
+  // ── Confidence row ────────────────────────────────────────────────────────
   const confRow = document.createElement('div');
   confRow.className = 'card-row card-confidence';
   const conf = finding.confidence.toLowerCase();
@@ -66,20 +141,38 @@ function buildFindingCard(finding) {
     <span class="confidence-badge ${escapeHtml(conf)}">${escapeHtml(finding.confidence)}</span>
   `;
 
-  // ── Evidence row ───────────────────────────────────────
+  // ── Evidence row ──────────────────────────────────────────────────────────
   const ev = finding.evidence;
-  const loc = shortLocation(ev.file, ev.line);
+  const { dir, filename, full } = parseFileUrl(ev.file);
+
   const evidRow = document.createElement('div');
   evidRow.className = 'card-row card-evidence';
-  evidRow.innerHTML = `
-    <div class="row-label">Evidence</div>
-    <div class="evidence-location">
-      <span class="evidence-filename" title="${escapeHtml(loc.full)}">${escapeHtml(loc.short)}</span>
-    </div>
-    <pre class="evidence-snippet">${escapeHtml(ev.snippet)}</pre>
-  `;
 
-  // ── Observed row ───────────────────────────────────────
+  const bcHtml = `
+    <div class="row-label">Evidence</div>
+    <div class="evidence-breadcrumb">
+      ${dir ? `<span class="breadcrumb-dir">${escapeHtml(dir)}</span><span class="breadcrumb-sep">/</span>` : ''}
+      <span class="breadcrumb-file" title="${escapeHtml(full)}">${escapeHtml(filename)}</span>
+      <span class="breadcrumb-sep">:</span>
+      <span class="breadcrumb-line">${escapeHtml(String(ev.line))}</span>
+      <span class="breadcrumb-sep">:</span>
+      <span class="breadcrumb-col">col ${escapeHtml(String(ev.column))}</span>
+    </div>
+  `;
+  evidRow.innerHTML = bcHtml;
+
+  const snippetWrap = document.createElement('div');
+  snippetWrap.className = 'snippet-wrap';
+
+  const pre = document.createElement('pre');
+  pre.className = 'evidence-snippet';
+  pre.textContent = ev.snippet;
+
+  snippetWrap.appendChild(pre);
+  snippetWrap.appendChild(makeCopyBtn(ev.snippet));
+  evidRow.appendChild(snippetWrap);
+
+  // ── Observed row ──────────────────────────────────────────────────────────
   const obsRow = document.createElement('div');
   obsRow.className = 'card-row card-observed';
   obsRow.innerHTML = `
@@ -87,46 +180,65 @@ function buildFindingCard(finding) {
     <div class="observed-summary">${escapeHtml(finding.observed.summary)}</div>
   `;
 
-  // ── Action row ─────────────────────────────────────────
+  // ── Action row ────────────────────────────────────────────────────────────
   const actionRow = document.createElement('div');
   actionRow.className = 'card-row card-action';
   actionRow.innerHTML = `<div class="row-label">Action</div>`;
 
+  const actionInner = document.createElement('div');
+  actionInner.className = 'action-row-inner';
+
   if (finding.action.supported) {
+    _actionIndex++;
+    const kbdNum = _actionIndex; // capture for closure
+
     const btn = document.createElement('button');
     btn.className = 'action-btn';
     btn.textContent = finding.action.label;
     btn.dataset.actionId = finding.action.action_id;
 
+    // Keyboard shortcut badge
+    const kbdHint = document.createElement('span');
+    kbdHint.className = 'kbd-hint';
+    kbdHint.textContent = `[${kbdNum}]`;
+
     btn.addEventListener('click', () => {
       const action_id = btn.dataset.actionId;
-
-      // Log to console (Task 5)
       console.log('[HOOKPRINT] Action fired:', action_id);
-
-      // Call the exposed hook so Kevin can wire real behaviour later
       window.HOOKPRINT_UI.onAction(action_id);
 
-      // Visually confirm — flip to DISABLED ✓ and lock
+      // Flip to DISABLED ✓
       btn.textContent = 'DISABLED ✓';
       btn.classList.add('disabled-state');
       btn.disabled = true;
+      kbdHint.style.opacity = '0.3';
+
+      // Show toast
+      showToast(action_id);
     });
 
-    actionRow.appendChild(btn);
+    // Register keyboard shortcut
+    _kbdButtons[kbdNum] = btn;
+
+    actionInner.appendChild(btn);
+    actionInner.appendChild(kbdHint);
   } else {
-    // Task 3: supported: false → NOT SUPPORTED label, never a button
     const label = document.createElement('span');
     label.className = 'not-supported';
     label.textContent = 'NOT SUPPORTED';
-    actionRow.appendChild(label);
+    actionInner.appendChild(label);
   }
 
+  actionRow.appendChild(actionInner);
+
+  // Assemble card body rows
+  body.appendChild(confRow);
+  body.appendChild(evidRow);
+  body.appendChild(obsRow);
+  body.appendChild(actionRow);
+
   card.appendChild(mechRow);
-  card.appendChild(confRow);
-  card.appendChild(evidRow);
-  card.appendChild(obsRow);
-  card.appendChild(actionRow);
+  card.appendChild(body);
 
   return card;
 }
@@ -144,10 +256,9 @@ function buildDroppedSection(dropped) {
   const arrow = document.createElement('span');
   arrow.className = 'toggle-arrow';
   arrow.textContent = '▶';
-  arrow.setAttribute('aria-hidden', 'true');
 
   const label = document.createTextNode(
-    `${dropped.length} candidate mechanic${dropped.length !== 1 ? 's' : ''} discarded — no resolvable evidence`
+    ` ${dropped.length} candidate mechanic${dropped.length !== 1 ? 's' : ''} discarded — no resolvable evidence`
   );
 
   toggle.appendChild(arrow);
@@ -155,7 +266,6 @@ function buildDroppedSection(dropped) {
 
   const list = document.createElement('div');
   list.id = 'dropped-list';
-  list.setAttribute('role', 'region');
 
   dropped.forEach(entry => {
     const row = document.createElement('div');
@@ -178,30 +288,78 @@ function buildDroppedSection(dropped) {
   return section;
 }
 
+// ── Export JSON ───────────────────────────────────────────────────────────────
+
+function exportJson(data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'hookprint-findings.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 function render(data) {
-  // Header
+  // ── Risk summary counts ──
+  const counts = { high: 0, medium: 0, low: 0 };
+  data.findings.forEach(f => { if (counts[f.confidence] !== undefined) counts[f.confidence]++; });
+
+  // Build risk bar HTML
+  const riskBarHtml = ['high', 'medium', 'low']
+    .filter(c => counts[c] > 0)
+    .map(c => {
+      const blocks = Array(counts[c]).fill(`<span class="risk-block ${c}"></span>`).join('');
+      return `
+        <span class="risk-item ${c}">
+          <span class="risk-dot ${c}"></span>
+          <span class="risk-blocks">${blocks}</span>
+          ${counts[c]} ${c.toUpperCase()}
+        </span>
+      `;
+    }).join('');
+
+  // ── Header ──
   const header = document.getElementById('panel-header');
   header.innerHTML = `
     <div class="header-wordmark">HOOKPRINT — Bill of Materials</div>
     <div class="header-url">${escapeHtml(data.url)}</div>
+    <div class="header-risk-bar">${riskBarHtml}</div>
     <div class="header-meta">
-      <span><span class="header-count">${data.findings.length}</span> finding${data.findings.length !== 1 ? 's' : ''} detected</span>
-      <span class="header-scanned">scanned ${escapeHtml(formatScannedAt(data.scanned_at))}</span>
+      <span>${data.findings.length} finding${data.findings.length !== 1 ? 's' : ''} detected</span>
+      <span class="header-freshness">scanned ${timeAgo(data.scanned_at)}</span>
     </div>
   `;
 
-  // Finding cards
+  // ── Toast placeholder ──
+  _toastEl = document.createElement('div');
+  _toastEl.id = 'action-toast';
+
   const list = document.getElementById('findings-list');
+  list.appendChild(_toastEl);
+
+  // ── Finding cards ──
+  // High confidence open by default, medium/low collapsed
   data.findings.forEach(finding => {
-    list.appendChild(buildFindingCard(finding));
+    const isOpen = finding.confidence === 'high';
+    list.appendChild(buildFindingCard(finding, isOpen));
   });
 
-  // Dropped section
+  // ── Dropped section ──
   if (data.dropped && data.dropped.length > 0) {
     list.appendChild(buildDroppedSection(data.dropped));
   }
+
+  // ── Export button ──
+  const footer = document.getElementById('panel-footer');
+  footer.innerHTML = `<span>HOOKPRINT v0.1 — diagnostic instrument</span>`;
+  const exportBtn = document.createElement('button');
+  exportBtn.className = 'footer-export';
+  exportBtn.textContent = '[EXPORT JSON]';
+  exportBtn.addEventListener('click', () => exportJson(data));
+  footer.appendChild(exportBtn);
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
