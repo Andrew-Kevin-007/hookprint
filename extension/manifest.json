@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "HOOKPRINT",
+  "version": "0.1.0",
+  "description": "Shows which compulsion mechanics are running on a page, names the line of the page's own code responsible, and switches the supported ones off.",
+
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "src/worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/instrument.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    }
+  ],
+
+  "action": {
+    "default_title": "HOOKPRINT",
+    "default_popup": "panel/panel.html"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["panel/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
