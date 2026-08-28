@@ -256,6 +256,27 @@
    * 5. NODE DESCRIPTION — DOM nodes cannot cross postMessage.
    * ===================================================================== */
 
+  /* Stable per-node identity for the whole session.
+   *
+   * `path` is NOT an identity: nodePath stops at the first ancestor with an id,
+   * so every lazy placeholder on the verification page collapses to the single
+   * key "main#feed > div.card > div.lazy". Anything reasoning about "the same
+   * element across events" — a kill switch deciding which target drives the
+   * auto-load, or a detector separating a sentinel from 200 lazy images —
+   * cannot be built on the path. This can.
+   *
+   * Additive field inside NodeDesc; nothing renamed, nothing removed. */
+  var nodeIds = new WeakMap();
+  var nextNodeId = 1;
+
+  function nodeIdOf(node) {
+    try {
+      var id = nodeIds.get(node);
+      if (!id) { id = nextNodeId++; nodeIds.set(node, id); }
+      return id;
+    } catch (e) { return 0; }
+  }
+
   function nodeDesc(node) {
     try {
       if (!node || node.nodeType === undefined) return null;
@@ -273,6 +294,7 @@
       var tl = 0;
       try { tl = (node.textContent || "").length; } catch (e) { tl = 0; }
       return {
+        node_id: nodeIdOf(node),
         tag: (node.tagName || "").toLowerCase(),
         id: node.id || "",
         cls: (typeof node.className === "string" ? node.className : "") || "",
@@ -362,7 +384,52 @@
     };
     ev._ref = ref || null;
     buf.push(ev);
+    if (anyTaps) fireTaps(ev);
     if (buf.length >= CFG.FLUSH_MAX) flush(); else scheduleFlush();
+  }
+
+  /* ---- switch event taps -------------------------------------------------
+   * A kill switch runs in the MAIN world beside us and needs the same evidence
+   * the detectors get, live, so it can CONFIRM a mechanic before it is ever
+   * asked to suppress one. Without this a switch can only guess, and a switch
+   * that guesses breaks pages.
+   *
+   * Type-filtered, so the hot path costs one property lookup and nothing else.
+   * A tap that throws is unregistered rather than allowed to reach the page.
+   * Taps receive the event object as-is: `site` is NOT resolved yet (that
+   * happens at flush) and the object must not be mutated. */
+  var taps = Object.create(null);      // type -> [fn]
+  var anyTaps = false;
+
+  function onEvent(types, fn) {
+    try {
+      if (typeof fn !== "function" || !types || !types.length) return function () {};
+      var list = typeof types === "string" ? [types] : types;
+      for (var i = 0; i < list.length; i++) {
+        (taps[list[i]] || (taps[list[i]] = [])).push(fn);
+      }
+      anyTaps = true;
+      return function () {
+        try {
+          for (var j = 0; j < list.length; j++) {
+            var a = taps[list[j]]; if (!a) continue;
+            var k = a.indexOf(fn); if (k !== -1) a.splice(k, 1);
+          }
+        } catch (e) { /* ignore */ }
+      };
+    } catch (e) { internalError("onEvent", e); return function () {}; }
+  }
+
+  function fireTaps(ev) {
+    var list = taps[ev.type];
+    if (!list || !list.length) return;
+    for (var i = 0; i < list.length; i++) {
+      try { list[i](ev); }
+      catch (e) {
+        internalError("tap:" + ev.type, e);
+        list.splice(i, 1); i--;          // a throwing tap does not get a second chance
+      }
+    }
   }
 
   function emit(type, data, ref, causeOverride) {
@@ -518,7 +585,10 @@
       }
       switches[def.id] = {
         id: def.id, mechanism: def.mechanism || "unknown",
-        hooks: def.hooks, rollback: def.rollback, armed: false, suppressed: 0
+        hooks: def.hooks, rollback: def.rollback,
+        onArm: typeof def.onArm === "function" ? def.onArm : null,
+        status: typeof def.status === "function" ? def.status : null,
+        armed: false, suppressed: 0
       };
       return true;
     } catch (e) { internalError("registerSwitch", e); return false; }
@@ -537,14 +607,26 @@
     }
   }
 
-  function arm(actionId) {
+  function arm(actionId, params) {
     try {
       var sw = switches[actionId];
       if (!sw) { emit("kill.armed", { action_id: actionId, mechanism: null, ok: false, reason: "no such switch registered" }, null, null); return false; }
       if (sw.armed) return true;
+      // A switch may refuse to arm — the honest outcome when it has not yet
+      // seen the mechanic it would suppress. Refusing beats suppressing a
+      // guess, and the reason is reported so the UI can say what is missing.
+      var ready = null;
+      if (typeof sw.onArm === "function") {
+        try { ready = sw.onArm(params || null); } catch (e) { internalError("onArm:" + actionId, e); ready = null; }
+      }
+      if (ready && ready.ok === false) {
+        emit("kill.armed", { action_id: actionId, mechanism: sw.mechanism, ok: false, reason: ready.reason || "switch not ready", detail: ready.detail || null }, null, null);
+        flush();
+        return false;
+      }
       sw.armed = true; rebuildHooks();
       armedAt = O.now(); pageErrorsAtArm = pageErrors;
-      emit("kill.armed", { action_id: actionId, mechanism: sw.mechanism, ok: true }, null, null);
+      emit("kill.armed", { action_id: actionId, mechanism: sw.mechanism, ok: true, detail: (ready && ready.detail) || null }, null, null);
       flush();
       return true;
     } catch (e) { internalError("arm", e); return false; }
@@ -587,6 +669,12 @@
     } catch (e) { /* the panic path itself must never throw */ }
   }
 
+  /* Which switch returned the last non-"pass" decision. Read synchronously by
+   * the caller immediately after gate() so a deferred callback can be filed
+   * against its owner; returning an object instead would allocate on a path
+   * that runs per observer entry. */
+  var lastGateSwitchId = null;
+
   function gate(hook, ctx, ref) {
     if (!anyArmed) return "pass";                 // fast path: one property read
     var list = armedByHook[hook];
@@ -597,6 +685,7 @@
       catch (e) { internalError("gate:" + sw.id + ":" + hook, e); continue; }
       if (d === "block" || d === "defer") {
         sw.suppressed++;
+        lastGateSwitchId = sw.id;
         emit("kill.suppressed", {
           action_id: sw.id, hook: hook, decision: d,
           detail: ctx && ctx.detail ? ctx.detail : null, suppress_count: sw.suppressed
@@ -667,15 +756,17 @@
 
       var wrapped = function () {
         var id = rec.id;
+        var called = false;          // has the PAGE's callback been entered?
         try {
           rec.iteration++;
           var t = O.now();
           var gap = t - rec.lastFire;
           rec.lastFire = t;
           var decision = gate("timer.callback", { api: apiName, timer_id: id, delay_ms: delay, iteration: rec.iteration, detail: "tick " + rec.iteration }, rec.ref);
-          if (decision === "defer") { holdDeferred(null, function () { try { handler.apply(this, arguments); } catch (e) {} }); return; }
+          if (decision === "defer") { var owner = lastGateSwitchId; holdDeferred(owner, function () { try { runPage("timer", id, handler, win, []); } catch (e) {} }); return; }
           if (decision === "block") { return; }
           var t1 = O.now();
+          called = true;
           var r = runPage("timer", id, handler, this, arguments);
           emit("timer.fire", {
             api: apiName, timer_id: id, delay_ms: delay, iteration: rec.iteration,
@@ -685,7 +776,13 @@
           if (!repeating) delete timerRecs[id];
           return r;
         } catch (e) {
-          // Instrumentation failed. The page's callback must still run.
+          // The page's OWN callback threw. It has already run once; running it
+          // again here would execute the page's side effects twice and the
+          // error would escape anyway. Propagate unchanged — that is exactly
+          // what an unpatched setTimeout does.
+          if (called) throw e;
+          // Instrumentation failed BEFORE the page's callback was entered.
+          // Rule 2: the page's callback must still run.
           internalError("timer.fire", e);
           return runPage("timer", id, handler, this, arguments);
         }
@@ -726,14 +823,18 @@
 
   function wrapObserverCallback(api, cb, meta) {
     return function (records, observer) {
+      var called = false;          // has the PAGE's callback been entered?
       try {
         meta.fires++;
         var t1 = O.now();
 
         if (api === "IntersectionObserver" && anyArmed && records && records.length) {
-          // Per-entry gating. This is the safety property: withhold the
-          // sentinel entry, deliver the lazy-image entries.
-          var keep = [];
+          // Per-entry gating. THIS is the safety property that lets us claim
+          // "we suppress the mechanic, not the API": one IntersectionObserver
+          // commonly drives both lazy images and infinite scroll, so we
+          // withhold the sentinel entry and deliver the rest of the same
+          // callback's entries untouched.
+          var keep = [], held = null, heldOwner = null;
           for (var i = 0; i < records.length; i++) {
             var e = records[i];
             var d = gate("observer.callback", {
@@ -743,18 +844,43 @@
                 boundingTop: e.boundingClientRect ? Math.round(e.boundingClientRect.top) : null
               },
               target: nodeDesc(e.target),
-              detail: (records.length - 0) + " entries, withholding 1"
+              // Real references, for switches only. Same realm, never
+              // serialized: gate() reads nothing off ctx but `detail`.
+              node: e.target,
+              observer: observer || this,
+              detail: null
             }, meta.ref);
-            if (d === "pass") keep.push(e);
+            if (d === "pass") { keep.push(e); continue; }
+            if (d === "defer") {
+              (held || (held = [])).push(e);
+              heldOwner = lastGateSwitchId;
+            }
+            // "block": the entry is dropped for good and is not resumable.
+          }
+          if (held) {
+            // Real deferral, as EVENTS.md promises: the withheld entries are
+            // re-delivered to the page's OWN callback when the switch is
+            // disarmed or released, so the page resumes from where it stopped
+            // rather than needing the intersection state to change again.
+            // Caveat, stated rather than hidden: a replayed entry's
+            // boundingClientRect is the rect from when it was withheld.
+            var selfCb = cb, selfThis = this, selfObs = observer || this, selfMeta = meta;
+            holdDeferred(heldOwner, function () {
+              runPage("observer", selfMeta.id, selfCb, selfThis, [held, selfObs]);
+            });
           }
           if (!keep.length) { emitObserverFire(api, meta, records, 0); return; }
           if (keep.length !== records.length) records = keep;
         }
 
+        called = true;
         var r = runPage("observer", meta.id, cb, this, [records, observer]);
         emitObserverFire(api, meta, records, +(O.now() - t1).toFixed(2));
         return r;
       } catch (e) {
+        // Same rule as the timer path: if the page's own callback threw, it has
+        // already run. Re-running it would double the page's side effects.
+        if (called) throw e;
         internalError("observer.fire", e);
         return runPage("observer", meta.id, cb, this, [records, observer]);
       }
@@ -1039,7 +1165,7 @@
 
         var d = gate("media.play", { media_id: id, tag: (this.tagName || "").toLowerCase(), node: nodeDesc(this), user_activation: ua, detail: "play() suppressed" }, ref);
         if (d === "block" || d === "defer") {
-          if (d === "defer") holdDeferred(null, function () { try { O.mediaPlay.apply(self, []); } catch (e) {} });
+          if (d === "defer") { var owner = lastGateSwitchId; holdDeferred(owner, function () { try { O.mediaPlay.apply(self, []); } catch (e) {} }); }
           emit("media.play", {
             media_id: id, tag: (this.tagName || "").toLowerCase(), paused_before: !!this.paused,
             muted: !!this.muted, current_time: this.currentTime, duration: this.duration,
@@ -1249,7 +1375,7 @@
       var d = ev.data;
       if (!d || d.__hookprint_cmd !== 1 || d.token !== TOKEN) return;
       switch (d.cmd) {
-        case "arm": arm(d.action_id); break;
+        case "arm": arm(d.action_id, d.params || null); break;
         case "disarm": disarm(d.action_id, d.reason); break;
         case "disarm_all": disarmAll(d.reason || "requested"); break;
         case "release": releaseDeferred(d.action_id || null); flush(); break;
@@ -1268,7 +1394,19 @@
         version: 1,
         session_id: SESSION_ID,
         registerSwitch: registerSwitch,
-        listSwitches: function () { var out = []; for (var k in switches) out.push({ id: k, mechanism: switches[k].mechanism, armed: switches[k].armed }); return out; }
+        // Read-only evidence tap, so a switch can confirm a mechanic from the
+        // same event stream the detectors see instead of guessing at one.
+        onEvent: onEvent,
+        nodeDesc: nodeDesc,
+        listSwitches: function () {
+          var out = [];
+          for (var k in switches) {
+            var s = switches[k], st = null;
+            if (s.status) { try { st = s.status(); } catch (e) { st = null; } }
+            out.push({ id: k, mechanism: s.mechanism, armed: s.armed, suppressed: s.suppressed, status: st });
+          }
+          return out;
+        }
       }),
       writable: false, enumerable: false, configurable: false
     });
