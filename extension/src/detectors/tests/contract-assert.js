@@ -23,7 +23,17 @@ export function assertValidFinding(finding, label = 'finding') {
   assert.ok(e.file.length > 0, `${label}: evidence.file must be non-empty`);
   assert.ok(Number.isInteger(e.line) && e.line > 0, `${label}: evidence.line must be a positive integer`);
   assert.ok(Number.isInteger(e.column) && e.column > 0, `${label}: evidence.column must be a positive integer`);
-  assert.equal(typeof e.snippet, 'string', `${label}: evidence.snippet must be a string`);
+
+  // EVENTS.md §"The detector interface": "`evidence.snippet` is not yours to
+  // fill. […] Emit `evidence` as `{ file, line, column }` and stop there."
+  // The MAIN world cannot read a cross-origin script's source, so a snippet
+  // present at this stage was invented rather than read — a fabricated
+  // quotation of someone else's code, which is worse than no snippet at all.
+  // `worker.js` fetches and windows the real text before the Manifest ships.
+  assert.ok(
+    !('snippet' in e),
+    `${label}: evidence.snippet must be absent — worker.js resolves it, detectors must not invent it`
+  );
 
   const o = finding.observed;
   assert.ok(o && typeof o === 'object', `${label}: observed missing`);
