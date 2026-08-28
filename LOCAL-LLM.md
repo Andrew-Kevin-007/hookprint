@@ -6,36 +6,36 @@ HOOKPRINT uses a local 8B model to classify code snippets into mechanic types. *
 
 ---
 
-## 1. Find your model file
+## 1. What you actually have (verified on this machine)
 
-Models live in `D:\xlkg-models`. List what's actually there:
+| | |
+|---|---|
+| **Binary** | `D:\xlkg-models\llama.cpp\bin\llama-server.exe` — **not on PATH, use the full path** |
+| **Model (default)** | `D:\xlkg-models\gguf\Qwen3-8B-Q4_K_M.gguf` |
+| **Model (alt)** | `D:\xlkg-models\gguf\Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` |
 
-```bash
-ls "D:/xlkg-models"/*.gguf
-```
-
-You want a `.gguf` file — Qwen3-8B or Llama-3.1-8B, ideally a `Q4_K_M` or `Q5_K_M` quant (good speed/quality tradeoff on consumer GPUs).
-
-If there are no `.gguf` files, look one level deeper:
-```bash
-find "D:/xlkg-models" -name "*.gguf" -maxdepth 3
-```
+There is also an Ollama model store at `D:\ollama\models`, but the `ollama` binary is not on PATH. **Use llama.cpp — it's present and working.**
 
 ---
 
 ## 2. Start the server
 
+One line, from anywhere:
+
 ```bash
-llama-server ^
-  -m "D:\xlkg-models\<YOUR-MODEL>.gguf" ^
-  --port 8080 ^
-  --ctx-size 4096 ^
-  --n-gpu-layers 99 ^
-  --temp 0 ^
-  --top-k 1
+"D:/xlkg-models/llama.cpp/bin/llama-server.exe" -m "D:/xlkg-models/gguf/Qwen3-8B-Q4_K_M.gguf" --port 8080 --ctx-size 4096 --n-gpu-layers 99 --temp 0 --top-k 1
 ```
 
-On Git Bash / PowerShell use `\` line continuation or put it on one line.
+Leave that terminal open — it holds the server. First load takes 30-60s while weights move to VRAM.
+
+| Flag | Why |
+|---|---|
+| `--port 8080` | The backend expects this. Don't change it without changing `backend/`. |
+| `--n-gpu-layers 99` | Offload everything to CUDA. **If it crashes or logs a VRAM failure, drop to `--n-gpu-layers 20` or `0`** — slower, but it runs. |
+| `--ctx-size 4096` | Plenty. We only ever send short snippets. |
+| `--temp 0` and `--top-k 1` | **Not optional.** We need deterministic, repeatable classification. A model that answers differently on two runs of the same page makes the demo unreproducible. |
+
+⚠️ **Expected warning, not an error:** `failed to fit params to free device memory: n_gpu_layers already set by user to 99`. That's llama.cpp saying it won't auto-tune because you set the value explicitly. It only matters if the server then dies — if it reaches `server is listening`, ignore it.
 
 | Flag | Why |
 |---|---|
@@ -54,15 +54,44 @@ If `llama-server` isn't on your PATH, use the full path to the binary in your ll
 curl http://localhost:8080/health
 ```
 
-Then a real round-trip:
+`{"status":"ok"}` means ready. **`{"error":{"message":"Loading model",...,"code":503}}` is normal for the first 30-60s** — wait, don't restart it.
 
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Reply with only the word: ok\"}],\"temperature\":0,\"max_tokens\":5}"
+---
+
+## 🔴 4. The Qwen3 trap — read this or you will lose an hour
+
+**Qwen3 has "thinking mode" ON by default. It burns your entire token budget on internal reasoning and returns an EMPTY string.** No error. No warning. Just `''`.
+
+Verified on this machine: the same classification request returned `''` with `max_tokens: 30`, and `'infinite_scroll'` once thinking was disabled.
+
+**Every request must send this:**
+
+```json
+"chat_template_kwargs": { "enable_thinking": false }
 ```
 
-You should get back a JSON body containing `ok`. If you do, the backend can talk to it.
+In Python:
+```python
+requests.post("http://localhost:8080/v1/chat/completions", json={
+    "messages": [{"role": "user", "content": prompt}],
+    "temperature": 0,
+    "max_tokens": 400,
+    "chat_template_kwargs": {"enable_thinking": False},   # ← REQUIRED
+})
+```
+
+**Working round-trip, verified:**
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Classify this JavaScript into EXACTLY ONE of: infinite_scroll, autoplay, countdown_timer, scarcity_message, variable_interval_refetch, unknown.\n\nReply with ONLY the label.\n\nCODE:\nconst obs = new IntersectionObserver(e => { if (e[0].isIntersecting) fetchNextPage(); });\nobs.observe(sentinel);"}],"temperature":0,"max_tokens":400,"chat_template_kwargs":{"enable_thinking":false}}'
+```
+→ returns `infinite_scroll`, `finish_reason: stop`.
+
+**If you ever get an empty reply, this is why.** Either the flag is missing or `max_tokens` is too low. Do not debug it as a prompt problem.
+
+Llama-3.1-8B has no thinking mode — swapping to it also avoids this entirely, at some cost in instruction-following.
 
 ---
 
