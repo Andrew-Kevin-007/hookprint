@@ -27,18 +27,21 @@
  * ---------------------------------------------------------------------------
  * TWO HARNESS v1 LIMITS THAT SHAPE THIS FILE — see the run report
  * ---------------------------------------------------------------------------
- * 1. **`cause` is always `null` in harness v1.** Every `emit()` call site in
- *    `instrument.js` passes an explicit `null` as `causeOverride`, and
- *    `emitRaw` treats that as "no cause" rather than "compute one", so
- *    `currentCause()` is never reached. The documented join is therefore
- *    unavailable today. Rather than ignore `cause` (a silent workaround) or
- *    give up (no detection at all), `attributeRequests` prefers the documented
- *    join and falls back to `seq` adjacency, which is sound for a different
- *    reason: the harness runs the page's callback to completion *before* it
- *    emits `observer.fire`, and `seq` is assigned synchronously, so requests
- *    issued inside that callback occupy a contiguous `seq` run immediately
- *    below the fire. The fallback is weaker evidence and is reported as such —
- *    it caps confidence at `medium` and is named in `observed.metrics`.
+ * 1. **`cause` was always `null` in harness v1, and now is not.** Every
+ *    `emit()` call site passes an explicit `null` as `causeOverride`, and
+ *    `emitRaw` tested it with `!== undefined`, so the override always won and
+ *    `currentCause()` was never reached — measured in Chrome 152 as 387/387
+ *    events with `cause: null`, including a fetch issued from inside an
+ *    observer callback. edith fixed this (`!= null`); the documented join is
+ *    live. The `seq`-adjacency fallback below is KEPT anyway, because it costs
+ *    nothing and covers the cases the join still cannot reach: an event whose
+ *    frame had already exited (`age_ms > 2`), and any future regression of the
+ *    same shape. It is sound for an independent reason — the harness runs the
+ *    page's callback to completion *before* it emits `observer.fire`, and `seq`
+ *    is assigned synchronously, so requests issued inside that callback occupy
+ *    a contiguous `seq` run immediately below the fire. It is weaker evidence
+ *    and is reported as such: it caps confidence at `medium` and names itself
+ *    in `observed.metrics.attribution`.
  *
  * 2. **There is no user-gesture signal at all.** `addEventListener` is not
  *    patched, and `cause.type === "event"` is never produced. EVENTS.md says

@@ -13,11 +13,15 @@
  *     emits `observer.fire` / `timer.fire`. Anything the callback did
  *     therefore has a LOWER `seq` than the fire event that describes it.
  *
- *  2. Harness v1 never populates `cause` — every `emit()` call site passes an
- *     explicit `null` override, so `currentCause()` is unreachable. Fixtures
- *     default to `cause: null` to match what ships today; the `*WithCause`
- *     variants carry the field the contract describes, so the stronger path is
- *     under test and starts working the moment the harness is fixed.
+ *  2. `cause` is populated. It was not: `emitRaw` tested `causeOverride`
+ *     with `!== undefined` while every call site passed a literal `null`, so
+ *     the override always won and the cause stack was maintained and thrown
+ *     away (387/387 events null, measured in Chrome 152). edith fixed it.
+ *     Fixtures still default to `cause: null` and take `withCause: true`
+ *     explicitly, because BOTH paths must stay under test: the causal join is
+ *     what the contract documents, and the `seq`-adjacency fallback is what
+ *     holds when a frame has already exited (`age_ms > 2`) or the bug returns.
+ *     A fixture that always carried a cause would stop testing the fallback.
  *
  * The scenarios mirror the trap pages in `testbench/` (TEAMMATE-2-TESTBENCH.md)
  * so that when the real bench lands there is a like-for-like comparison.
