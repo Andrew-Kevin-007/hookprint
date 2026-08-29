@@ -18,7 +18,14 @@ export const LEDGER_EVENT_TYPES = [
   // schema), not a hidden defect.
   'merge-completed',
   'merge-contradiction-found',
-  'merge-incomplete'
+  'merge-incomplete',
+  // Phase 2 (quality/score.js) — one batch's hybrid deterministic +
+  // cross-batch-consistency score, recorded alongside its `contextRatio`.
+  // This is the observation Phase 3's measurement campaign and Phase 4's
+  // learned degradation curves are built on top of (quality as a function
+  // of context load, per provider) — see quality/score.js's
+  // `buildQualityScoreEvent()` for the exact payload contract.
+  'batch-quality-scored'
 ];
 
 export function createLedgerEvent({ eventType, taskId, provider, routeId, payload = {}, timestamp = new Date().toISOString() }) {

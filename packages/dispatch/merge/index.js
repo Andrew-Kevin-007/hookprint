@@ -17,6 +17,8 @@
 
 import { createLedgerEvent } from '../execution-contracts.js';
 import { parseEnvelope } from '../executor/envelope.js';
+import { appendEvent } from '../ledger/store.js';
+import { scoreBatch, buildQualityScoreEvent } from '../quality/score.js';
 import { crossCheckBatches } from './consistency.js';
 
 function formatBatchLabel(provider, batchIndex) {
@@ -68,19 +70,40 @@ function buildAnswer({ parsedBatches, failedBatches, contradictions }) {
  *
  * @param {object} routeDecision - a route-contracts.js RouteDecision (used
  *   only for `taskId`/`decisionId` linkage; not required to call this).
- * @param {Array<{provider:string, batchIndex:number, outcome:{status:string, output:string|null, errorClass?:string|null}}>} batchResults -
+ * @param {Array<{provider:string, batchIndex:number, outcome:{status:string, output:string|null, errorClass?:string|null}, batch?:Array, originalItems?:Array, contextRatio?:number}>} batchResults -
  *   one entry per executed batch, shaped exactly like `executor/index.js`'s
  *   `executeBatch()` return value plus the `provider`/`batchIndex` that
- *   identify which batch it was.
+ *   identify which batch it was. `batch`/`originalItems` (the items actually
+ *   sent to the provider for this batch) and `contextRatio` (from
+ *   `route-contracts.js`'s `estimateProviderFit()`) are OPTIONAL additive
+ *   fields consumed only by Phase 2's quality scoring below — omitting them
+ *   degrades the deterministic grounding/truncation checks gracefully (see
+ *   `quality/score.js`'s `scoreDeterministic()`) rather than throwing, so
+ *   every pre-existing caller of this function keeps working unchanged.
+ * @param {{ledgerPath?:string}} [options] - when `ledgerPath` is given, one
+ *   `'batch-quality-scored'` ledger event is appended per successfully-parsed
+ *   batch (see `quality/score.js`'s `buildQualityScoreEvent()`). Omitted (the
+ *   default), `mergeRoute()` performs NO I/O, exactly as before this phase —
+ *   this function's own file header states "this module does no I/O itself",
+ *   and there is no ledger path already threaded through it to reuse (the
+ *   existing `buildMergeLedgerEvent()` below is a pure builder the CALLER
+ *   appends via `ledger/store.js`'s `appendEvent()`, e.g. in `tests/merge.test.js`'s
+ *   integration test — there is no site inside this file that already calls
+ *   `appendEvent()`). This optional param is a deliberate, minimal addition
+ *   for the one thing the task brief asks this function to do that its pure
+ *   builder-only convention cannot: write to the ledger AS PART OF calling
+ *   `mergeRoute()`, without an unconditional, always-on side effect change
+ *   for every existing caller.
  * @returns {{
  *   answer: string,
  *   provenance: Array<{claimSubject:string, value:number, sourceProvider:string, sourceBatchIndex:number}>,
  *   verification: {contradictions:object[], agreements:object[], unmatched:object[]},
  *   status: 'CLEAN'|'CONTRADICTIONS_FOUND'|'INCOMPLETE',
- *   failedBatches: Array<{provider:string, batchIndex:number, reason:string}>
+ *   failedBatches: Array<{provider:string, batchIndex:number, reason:string}>,
+ *   qualityScores: Array<{provider:string, batchIndex:number, contextRatio:number|null, combinedScore:number, deterministicScore:number, consistencyScore:number, weights:object, reasons:string[]}>
  * }}
  */
-export function mergeRoute(routeDecision, batchResults) {
+export function mergeRoute(routeDecision, batchResults, options = {}) {
   const results = Array.isArray(batchResults) ? batchResults : [];
 
   const parsedBatches = [];
@@ -104,7 +127,18 @@ export function mergeRoute(routeDecision, batchResults) {
       continue;
     }
 
-    parsedBatches.push({ provider, batchIndex, envelope: parsed.envelope });
+    parsedBatches.push({
+      provider,
+      batchIndex,
+      envelope: parsed.envelope,
+      // Kept alongside (not part of the public shape read by buildProvenance/
+      // buildAnswer/crossCheckBatches, which only look at provider/batchIndex/
+      // envelope) purely so Phase 2 scoring below has what it needs per batch.
+      parseResult: parsed,
+      batch: entry?.batch ?? null,
+      originalItems: entry?.originalItems ?? null,
+      contextRatio: Number.isFinite(entry?.contextRatio) ? entry.contextRatio : null
+    });
   }
 
   const verification = crossCheckBatches(parsedBatches);
@@ -119,7 +153,32 @@ export function mergeRoute(routeDecision, batchResults) {
 
   const answer = buildAnswer({ parsedBatches, failedBatches, contradictions: verification.contradictions });
 
-  return { answer, provenance, verification, status, failedBatches };
+  // Phase 2: score every successfully-parsed batch (deterministic + cross-
+  // batch consistency), and record each to the ledger when a path was given.
+  const qualityScores = parsedBatches.map((pb) => {
+    const scoreResult = scoreBatch(pb.parseResult, pb.batch, pb.originalItems, pb.batchIndex, pb.provider, verification);
+
+    if (options.ledgerPath) {
+      const event = buildQualityScoreEvent({
+        taskId: options.taskId ?? routeDecision?.taskId,
+        provider: pb.provider,
+        routeId: routeDecision?.decisionId ?? null,
+        batchIndex: pb.batchIndex,
+        contextRatio: pb.contextRatio,
+        scoreResult
+      });
+      appendEvent(options.ledgerPath, event);
+    }
+
+    return {
+      provider: pb.provider,
+      batchIndex: pb.batchIndex,
+      contextRatio: pb.contextRatio,
+      ...scoreResult
+    };
+  });
+
+  return { answer, provenance, verification, status, failedBatches, qualityScores };
 }
 
 /**
