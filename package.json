@@ -1,0 +1,23 @@
+{
+  "name": "quorum",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "bin": {
+    "quorum": "./bin/quorum.js"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "test:align": "cd packages/align && node --test tests/*.test.js",
+    "test:sign": "cd packages/sign && node --test tests/*.test.js",
+    "test:registry": "cd packages/registry && node --test tests/*.test.js",
+    "test:stake": "cd packages/stake && npx hardhat test",
+    "test:dispatch": "cd packages/dispatch && node --test tests/*.test.js",
+    "bench": "node bench/run.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,303 @@
+{
+  "$schema": "./SCHEMA.md",
+  "name": "BATON claim-corruption benchmark v1",
+  "description": "Labelled claim-corruption instances harvested from real AI-agent output written before BATON existed. Ground truth for every quantitative row was independently recomputed from primary data (D:\\Projects\\Stark-Core\\state\\dispatches.jsonl), never carried forward from a summary.",
+  "built": "2026-08-29",
+  "corpus": {
+    "root": "D:\\Tenori_Hack\\ideation\\",
+    "files": [
+      "raven-deep-trust.md",
+      "zeus-confidence-routing.md",
+      "loki-deep-trust.md"
+    ],
+    "written": "2026-08-27",
+    "note": "All three documents predate BATON. None was written with a checker in mind. The corruption in them is organic."
+  },
+  "ground_truth_recompute": {
+    "source": "D:\\Projects\\Stark-Core\\state\\dispatches.jsonl",
+    "method": "deduplicate on `key`, last-write-wins; status=='completed' counts as a completion",
+    "stamped": "2026-08-29",
+    "distinct_dispatches": 315,
+    "earliest_dispatch": "2026-07-10",
+    "latest_dispatch": "2026-08-29",
+    "fleet_span_days": 50,
+    "guards_present_false": "313 of 315 (2 records carry no `guards` field at all)",
+    "per_agent_completion": {
+      "friday": "3/22 = 14%",
+      "edith": "6/13 = 46%",
+      "zeus": "19/35 = 54%",
+      "beastboy": "19/22 = 86%",
+      "pete": "18/25 = 72%"
+    },
+    "WARNING": "This block is itself perishable and that is the point. The distinct-dispatch count read 309 in LOKI-ATTACK.md (2026-08-29, earlier), 311 on the first recompute of this session, and 313 twenty minutes later in the same session. The file is appended to live. Re-run `node bench/recompute.js` before quoting any figure here; do not cite this block from memory. BATON cannot detect that this block has gone stale - that is limitation 2 in PROJECT-REFERENCE.md section 7, demonstrated on the benchmark's own metadata."
+  },
+  "scope_classes": {
+    "handoff_integrity": "Origin and restatement both exist in the corpus. BATON is designed to have an opinion. THESE ARE THE SCORED ROWS - precision, recall and false-positive rate are computed over this class only.",
+    "origin_truth": "The figure was already wrong when first written; the restatement copied it faithfully. BATON is designed to be SILENT here (trust boundary). Scored separately as 'correctly silent'. A REJECT on one of these rows would be a false positive against the trust boundary's own promise.",
+    "invention": "A downstream claim with no origin anywhere in the corpus. Default gate() emits no verdict (the `unaligned` honesty receipt). Reported separately - this is the measured size of the coverage gap named in LOKI-ATTACK.md finding 2.",
+    "hard_case": "Genuinely ambiguous at the level of a non-semantic checker. Excluded from the headline metric and reported on its own line, with the reasoning stated. Hiding these would make the benchmark dishonest."
+  },
+  "instance_count_note": "LOKI-ATTACK.md and the pitch cite 'eight more instances'. That count comes from loki-deep-trust.md:295-302, which enumerates three named figures plus 'every per-agent figure in raven's line 19 - five instances', and friday's 2/37 appears in both halves. The distinct, individually-checkable pairs are enumerated below as B01-B12. Cite the enumeration, not the headline number, if a judge counts.",
+  "instances": [
+    {
+      "id": "B01",
+      "scope": "handoff_integrity",
+      "class": "denominator_loss",
+      "expect": "REJECT",
+      "flagship": true,
+      "origin": {
+        "file": "zeus-confidence-routing.md",
+        "line": 158,
+        "text": "Kevin's measurement, carried forward: confidence-reporting policy in 10 of ~18 agent configs (29 occurrences); 2 of 252 dispatch records carry a confidence value (0.79%); no consumer of the signal exists.",
+        "focus": "2 of 252 dispatch records carry a confidence value (0.79%)"
+      },
+      "restatement": {
+        "file": "zeus-confidence-routing.md",
+        "line": 173,
+        "text": "The literature measures instruction-following decay from ~100% down to 50-91% under load, stacking, or distance. Kevin's fleet reports 0.79%. That is not the same regime - it is roughly two orders of magnitude below the worst published degradation.",
+        "focus": "Kevin's fleet reports 0.79%"
+      },
+      "claimed_value": "0.79%",
+      "true_value": "0.79% is arithmetically fine; the BASE (252) is dropped",
+      "how_ground_truth_established": "Direct read of both lines in the same file. The corruption is structural, not numeric: the rate survives, the denominator that made it meaningful does not, and the bare rate is then compared against a published range whose base is different.",
+      "why_it_matters": "Same agent, same file, 15 lines apart. No handoff involved. This is the demo.",
+      "notes": "Both lines are in ONE document by ONE agent. Do not describe this as a chain or a hop."
+    },
+    {
+      "id": "B02",
+      "scope": "handoff_integrity",
+      "class": null,
+      "expect": "ACCEPT",
+      "negative": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "Per-agent completion | friday 2/37 (5%) - edith 5/18 (28%) - zeus 16/34 (47%) - beastboy 12/18 (67%) - pete 18/25 (72%)",
+        "focus": "pete 18/25 (72%)"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 130,
+        "text": "Kevin's raw data: friday completes 2 of 37 (5%), pete 18 of 25 (72%).",
+        "focus": "pete 18 of 25 (72%)"
+      },
+      "claimed_value": "pete 18/25 = 72%",
+      "true_value": "18/25 = 72%",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl 2026-08-29, deduplicated on `key`: pete has 25 dispatches, 18 with status=='completed'. EXACT MATCH to the claim, both at origin and at restatement.",
+      "why_it_matters": "THE FALSE-POSITIVE TEST. This is a correct figure, correctly restated, in slightly different words ('18/25' -> '18 of 25'). A checker that fires here is punishing honest paraphrase. LOKI-ATTACK.md finding 4 is that nobody had measured how often BATON says no to something that was fine. This row, and B04, are how that gets measured.",
+      "notes": "pete's is the only per-agent figure in the corpus that survived recomputation unchanged, in loki's pass AND in this one. It is the single most valuable row in the benchmark."
+    },
+    {
+      "id": "B03",
+      "scope": "origin_truth",
+      "class": null,
+      "expect": "ACCEPT",
+      "known_miss": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "friday 2/37 (5%)",
+        "focus": "friday 2/37 (5%)"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 130,
+        "text": "friday completes 2 of 37 (5%)",
+        "focus": "friday completes 2 of 37 (5%)"
+      },
+      "claimed_value": "2/37 = 5%",
+      "true_value": "3/21 = 14% (as recomputed 2026-08-29). Was 2/17 = 12% when recomputed 2026-08-27.",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl, deduplicated on `key`. The '37' is phantom rows: the raw file is append-with-rewrites, so an uncorrected line count over-counts friday's dispatches. Deduplication yields 21 today and yielded 17 two days ago.",
+      "why_it_matters": "THE VOLUNTEERED COUNTEREXAMPLE. BATON returns ACCEPT and the number is wrong by a factor of ~3. It was wrong at origin and copied perfectly - clean transit, poisoned source. The mentor's threat-model review (BATON_Threat_Model_and_Security_Architecture.md:187-206) uses these exact two numbers as its own textbook example of 'Threat 1 - Origin Poisoning'.",
+      "notes": "NEVER present this as something BATON catches. Present it as the honesty beat. Note also that its true value has moved twice - which makes it simultaneously the best illustration of the evidence-staleness limitation."
+    },
+    {
+      "id": "B04",
+      "scope": "handoff_integrity",
+      "class": null,
+      "expect": "ACCEPT",
+      "negative": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "friday 2/37 (5%)",
+        "focus": "friday 2/37 (5%)"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 136,
+        "text": "This worker finished 2 jobs out of 37. Fire them? The power kept cutting out. Watch what happens when we account for that.",
+        "focus": "This worker finished 2 jobs out of 37."
+      },
+      "claimed_value": "2 of 37",
+      "true_value": "the restatement is faithful to its origin; both are wrong about the world (see B03)",
+      "how_ground_truth_established": "Direct read. The figure is restated in heavily rewritten prose - a table cell becomes a rhetorical question, 'completion' becomes 'finished jobs', the agent's name is dropped for 'this worker' - and the numerator, denominator and meaning all survive intact.",
+      "why_it_matters": "THE PARAPHRASE-ROBUSTNESS TEST, and the second false-positive probe. This is exactly the transformation BATON claims to survive: no ID carried, wording entirely different, quantity preserved. If BATON fires here it is broken in the way that matters most, because heavy paraphrase is the normal case, not the corrupt one."
+    },
+    {
+      "id": "B05",
+      "scope": "origin_truth",
+      "class": null,
+      "expect": "ACCEPT",
+      "known_miss": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 14,
+        "text": "guards.present == false | 378 / 378 = 100% | The schema has a field for the compliance guard. It has never once been filled.",
+        "focus": "guards.present == false 378 / 378 = 100%"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 107,
+        "text": "Kevin has it at 100% severity: guards.present is false on 378 of 378 dispatches.",
+        "focus": "guards.present is false on 378 of 378 dispatches"
+      },
+      "claimed_value": "378 of 378 = 100%",
+      "true_value": "311 of 313 = 99.4% (2 records carry no `guards` field at all)",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl 2026-08-29, deduplicated on `key`. 378 was a raw line count of an append-with-rewrites file, not a count of distinct dispatches. The claim's SHAPE (a near-total compliance failure) survives recomputation; its base does not, and the true rate is not exactly 100%.",
+      "why_it_matters": "Clean transit, wrong origin - same class as B03, different figure. Also the honest note that the underlying finding held up: the policy really is unobserved, just not on 378 of 378."
+    },
+    {
+      "id": "B06",
+      "scope": "handoff_integrity",
+      "class": "denominator_loss",
+      "expect": "REJECT",
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 20,
+        "text": "confidence values in dispatch record | ~2 of 378 (brief's figure; last_message is truncated to ~200 chars so this is a floor, not a measurement)",
+        "focus": "confidence values in dispatch record ~2 of 378"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 81,
+        "text": "Kevin's fleet: 0.79% - 2 of 252 dispatches carried the confidence value that 10 of ~18 configs require.",
+        "focus": "0.79% - 2 of 252 dispatches carried the confidence value"
+      },
+      "claimed_value": "2 of 252 (0.79%)",
+      "true_value": "the same numerator (2) is quoted against two different bases - 378 and 252 - 61 lines apart in ONE document. 2/378 = 0.53%, 2/252 = 0.79%.",
+      "how_ground_truth_established": "Direct read of both lines in the same file. No external data needed: the document contradicts itself.",
+      "why_it_matters": "An intra-document base contradiction. Note also that line 20 carries an explicit caveat - 'a floor, not a measurement' - which line 81 drops while promoting the figure to a headline. That makes this a caveat_loss candidate as well as a base contradiction; either verdict is a correct catch.",
+      "notes": "This row is why the corpus is interesting: the SAME AGENT flagged its own figure as unreliable and then used it as a headline 61 lines later."
+    },
+    {
+      "id": "B07",
+      "scope": "hard_case",
+      "class": "value_drift",
+      "expect": "REJECT",
+      "excluded_from_headline": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 14,
+        "text": "guards.present == false | 378 / 378 = 100%",
+        "focus": "guards.present == false 378 / 378 = 100%"
+      },
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 81,
+        "text": "I measured a second, harder one this run: guards.present false on 378 of 378 = 0.00%, at a larger denominator.",
+        "focus": "guards.present false on 378 of 378 = 0.00%"
+      },
+      "claimed_value": "0.00%",
+      "true_value": "semantically consistent with the origin; numerically its complement",
+      "how_ground_truth_established": "Direct read. The origin states '378/378 = 100%' meaning 100% of dispatches have guards.present == false. The restatement states the same fact as '378 of 378 = 0.00%', meaning 0% compliance. Same base, same subject, inverted rate.",
+      "why_it_matters": "HONEST HARD CASE, and it is here precisely because it is inconvenient. A non-semantic checker sees 100% -> 0.00% on the same base and the same unit and fires value_drift. That is defensible (the surface claim genuinely inverted, and a reader skimming would be misled) and it is also arguably a false positive (the author is stating the complement, not corrupting the figure). BATON has no polarity model and cannot tell these apart. Excluded from the headline precision/recall figure and reported on its own line. A benchmark that quietly dropped this row to make its numbers look better would be committing the exact sin this project exists to catch."
+    },
+    {
+      "id": "B08",
+      "scope": "invention",
+      "class": null,
+      "expect": "NO_VERDICT",
+      "strict_expect": "REJECT",
+      "origin": null,
+      "restatement": {
+        "file": "raven-deep-trust.md",
+        "line": 26,
+        "text": "We ran an 18-agent fleet for six months. We had a fleet-wide reporting policy. Our own telemetry observed it twice in 378 dispatches, and a separate safety guard zero times in 378."
+      },
+      "claimed_value": "six months",
+      "true_value": "50 days (earliest dispatch 2026-07-10, latest 2026-08-29)",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl 2026-08-29: min and max of `started_at` across 313 deduplicated records. 50 days against a claimed six months is a 3.65x provenance overclaim.",
+      "why_it_matters": "THE COVERAGE-GAP MEASUREMENT. There is no origin claim for 'six months' anywhere in the corpus - the number was invented at the point of writing. Under default gate() this produces NO VERDICT: it lands in the `unaligned` honesty receipt and the pipeline proceeds. That is LOKI-ATTACK.md finding 2, made concrete and countable rather than argued. Under `strict` it becomes REJECT - no_origin.",
+      "notes": "The sentence containing this claim is the one raven's own document calls 'the sentence every idea below is downstream of'. It appears eleven times in that file and in nine other files in the corpus. It is the single most damaging error in the corpus and the default gate does not stop it."
+    },
+    {
+      "id": "B09",
+      "scope": "origin_truth",
+      "class": null,
+      "expect": "ACCEPT",
+      "known_miss": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "edith 5/18 (28%)"
+      },
+      "restatement": null,
+      "claimed_value": "5/18 = 28%",
+      "true_value": "6/13 = 46% (recomputed 2026-08-29). Was 3/6 = 50% when recomputed 2026-08-27.",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl, deduplicated on `key`. Both numerator and denominator were wrong at origin.",
+      "why_it_matters": "Single-mention instance: no restatement exists, so there is no handoff to check. Included for completeness of the labelled set and to make the point that most corruption in a real corpus has no second occurrence for a handoff checker to compare against.",
+      "notes": "Not scored - carries no restatement. Its ground truth has moved once already."
+    },
+    {
+      "id": "B10",
+      "scope": "origin_truth",
+      "class": null,
+      "expect": "ACCEPT",
+      "known_miss": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "zeus 16/34 (47%)"
+      },
+      "restatement": null,
+      "claimed_value": "16/34 = 47%",
+      "true_value": "19/35 = 54% (recomputed 2026-08-29). Was 16/32 = 50% when recomputed 2026-08-27.",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl, deduplicated on `key`.",
+      "why_it_matters": "Single-mention instance. Same shape as B09.",
+      "notes": "Not scored - carries no restatement."
+    },
+    {
+      "id": "B11",
+      "scope": "origin_truth",
+      "class": null,
+      "expect": "ACCEPT",
+      "known_miss": true,
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 19,
+        "text": "beastboy 12/18 (67%)"
+      },
+      "restatement": null,
+      "claimed_value": "12/18 = 67%",
+      "true_value": "19/22 = 86% (recomputed 2026-08-29). Was 12/15 = 80% when recomputed 2026-08-27.",
+      "how_ground_truth_established": "Recomputed from dispatches.jsonl, deduplicated on `key`.",
+      "why_it_matters": "Single-mention instance. Same shape as B09.",
+      "notes": "Not scored - carries no restatement."
+    },
+    {
+      "id": "B12",
+      "scope": "handoff_integrity",
+      "class": "caveat_loss",
+      "expect": "REJECT",
+      "origin": {
+        "file": "raven-deep-trust.md",
+        "line": 20,
+        "text": "confidence values in dispatch record | ~2 of 378 (brief's figure; last_message is truncated to ~200 chars so this is a floor, not a measurement)",
+        "focus": "~2 of 378 (brief's figure; last_message is truncated to ~200 chars so this is a floor, not a measurement)"
+      },
+      "restatement": {
+        "file": "zeus-confidence-routing.md",
+        "line": 158,
+        "text": "2 of 252 dispatch records carry a confidence value (0.79%)",
+        "focus": "2 of 252 dispatch records carry a confidence value (0.79%)"
+      },
+      "claimed_value": "2 of 252 (0.79%), stated flat",
+      "true_value": "the origin explicitly qualifies the figure as 'a floor, not a measurement'; the restatement states it as a measurement",
+      "how_ground_truth_established": "Direct read of both lines. The hedge is present at origin and absent downstream.",
+      "why_it_matters": "A caveat_loss instance where the dropped qualifier is exactly the one that mattered - 'this is a floor, not a measurement' is the difference between a bound and a result. It is also the caveat whose absence let the figure be compared against a published range 15 lines later (B01).",
+      "notes": "The two documents here are CONCURRENT SIBLINGS, not a chain - zeus started 2026-08-27T13:52:26, raven 13:53:28, 62.0 seconds apart, neither reading the other. This pair is scored as a claim-pair for checker evaluation ONLY; it is not evidence of a handoff and must never be described as one."
+    }
+  ],
+  "annotation_note": "Each origin/restatement carries a `focus`: the minimal claim-bearing clause, taken verbatim from the cited line. This is claim-level annotation, the same granularity the summarization-faithfulness literature evaluates at, and it is necessary because a real corpus line often carries several unrelated quantities. `bench/run.js` uses `focus` when present and falls back to the full line otherwise. Running with --raw disables focus entirely and measures the harder, more realistic document-granularity task - see bench/README.md, which reports both numbers because the gap between them is itself a finding."
+}

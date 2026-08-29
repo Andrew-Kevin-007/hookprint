@@ -1,0 +1,9 @@
+{
+  "name": "@baton/sign",
+  "private": true,
+  "type": "module",
+  "description": "ed25519 signing and verification over canonical claim bundles. Zero dependencies — node:crypto only.",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

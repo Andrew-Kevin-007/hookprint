@@ -1,0 +1,25 @@
+{
+  "class": "denominator_loss",
+  "subtype": "base_dropped",
+  "severity": "fail",
+  "hop": 3,
+  "claimId": "c_014",
+  "cid": "h3_009",
+  "message": "The writer's restatement carries the bare rate 0.79% with no surviving denominator — the origin claim's base (2 of 252) was dropped, not just reworded.",
+  "evidence": {
+    "origin": {
+      "file": "ideation/raven-deep-trust.md",
+      "sha256": "3f9a1c2e7b4d5a6f8091c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f607",
+      "span": { "start": 1180, "end": 1231 },
+      "quote": "Kevin's fleet: 0.79% — 2 of 252 dispatches"
+    },
+    "restatement": {
+      "file": "ideation/zeus-confidence-routing.md",
+      "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f9021324354657687980a1b2c3d4e5f60",
+      "span": { "start": 4210, "end": 4241 },
+      "quote": "Kevin's fleet reports 0.79%"
+    }
+  },
+  "agent": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "amountEth": "0.4"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@baton/dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BATON hybrid quota-routing layer — provider profiling, route planning, and the provider execution engine that wraps the trust layer's ledger/reputation model with quality-aware, context-window-safe dispatch.",
+  "license": "MIT",
+  "main": "executor/index.js",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "openai": "^4.104.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

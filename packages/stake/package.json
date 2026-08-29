@@ -1,0 +1,23 @@
+{
+  "name": "@baton/stake",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BATON — AgentStake: EVM stake/slash contract + Node client. Off-chain BATON verdict, on-chain enforcement. Hardhat, local chain primary, testnet deploy best-effort.",
+  "license": "MIT",
+  "main": "client/index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "demo:local": "hardhat run scripts/demo-local.js",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "dotenv": "^17.4.2",
+    "hardhat": "^2.29.1"
+  }
+}

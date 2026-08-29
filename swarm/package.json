@@ -1,0 +1,19 @@
+{
+  "name": "@baton/swarm",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BATON — researcher/summariser/writer pipeline that makes real LLM calls to generate a fresh 3-hop paraphrase chain on demand. Real generation only; any corruption is organic model behavior, never scripted. See README.md.",
+  "license": "MIT",
+  "main": "run.js",
+  "scripts": {
+    "demo": "node run.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
