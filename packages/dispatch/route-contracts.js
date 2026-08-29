@@ -1,3 +1,5 @@
+import { classifyWorkload } from './profiling/classify.js';
+
 export function buildTaskRequest(input = {}) {
   const task = {
     // Identification
@@ -162,6 +164,10 @@ export function analyzeTaskQuality(task) {
     reason = normalized.kind;
   }
 
+  // Real workload-type classification (profiling/classify.js), closing the
+  // gap this heuristic used to paper over with two hardcoded `kind` checks.
+  const workload = classifyWorkload(normalized);
+
   return {
     qualityTarget: Math.max(0.65, Math.min(0.95, inferredTarget)),
     reason,
@@ -169,7 +175,11 @@ export function analyzeTaskQuality(task) {
     prediction: {
       itemCount,
       kind: normalized.kind,
-      safeMode: normalized.safeMode
+      safeMode: normalized.safeMode,
+      // Additive fields from the real workload taxonomy.
+      workloadType: workload.workloadType,
+      workloadConfidence: workload.confidence,
+      workloadSignals: workload.signals
     }
   };
 }

@@ -64,6 +64,37 @@ test('analyzeTaskQuality infers quality target from task size', () => {
   assert.equal(codeQA.reason, 'code-review');
 });
 
+test('analyzeTaskQuality additive fields: workloadType/workloadConfidence/workloadSignals are present and sensible', () => {
+  const codeTask = {
+    items: [
+      {
+        id: 'file.js',
+        content: '```js\nfunction total(items) {\n  return items.reduce((a, b) => a + b, 0);\n}\n```\nclass Cart {}\n'
+      }
+    ],
+    kind: 'code-review',
+    qualityTarget: 0 // trigger the heuristic fallback path, same as the existing test above
+  };
+
+  const qa = analyzeTaskQuality(codeTask);
+
+  // Existing, previously-asserted fields keep their value and type.
+  assert.ok(qa.qualityTarget >= 0.9);
+  assert.equal(qa.reason, 'code-review');
+  assert.equal(qa.confidence, 0.7);
+  assert.equal(qa.prediction.itemCount, 1);
+  assert.equal(qa.prediction.kind, 'code-review');
+  assert.equal(qa.prediction.safeMode, true);
+
+  // New, additive fields.
+  assert.equal(qa.prediction.workloadType, 'code_analysis');
+  assert.ok(Number.isFinite(qa.prediction.workloadConfidence));
+  assert.ok(qa.prediction.workloadConfidence > 0 && qa.prediction.workloadConfidence <= 1);
+  assert.ok(Array.isArray(qa.prediction.workloadSignals));
+  assert.ok(qa.prediction.workloadSignals.length >= 1);
+  assert.equal(qa.prediction.workloadSignals[0].workloadType, 'code_analysis');
+});
+
 test('buildRouteDecision captures route selection with fallback chain', () => {
   const decision = buildRouteDecision({
     taskId: 't-201',
