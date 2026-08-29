@@ -7,7 +7,18 @@ export const LEDGER_EVENT_TYPES = [
   'task-fallback',
   'provider-health-update',
   'prediction-recorded',
-  'reputation-updated'
+  'reputation-updated',
+  // The merge step (merge/index.js) — one event type per mergeRoute() status,
+  // the same "one type per outcome" convention task-completed/task-failed
+  // already use for EXECUTION_STATUS. 'merge-incomplete' is its own type
+  // (not folded into 'task-failed') because a batch can fail HERE — a
+  // successful API call whose output didn't match the required envelope
+  // schema — in a way executor/index.js's outcome.status never observes;
+  // that is itself a real reputation signal (a provider ignoring the
+  // schema), not a hidden defect.
+  'merge-completed',
+  'merge-contradiction-found',
+  'merge-incomplete'
 ];
 
 export function createLedgerEvent({ eventType, taskId, provider, routeId, payload = {}, timestamp = new Date().toISOString() }) {
