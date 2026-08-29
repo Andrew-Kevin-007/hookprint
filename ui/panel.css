@@ -111,20 +111,30 @@ body::before {
 /* Risk summary bar */
 .header-risk-bar {
   display: flex;
-  gap: 14px;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0;
   margin-bottom: 8px;
-  padding: 7px 10px;
   background: #0a0a0a;
   border: 1px solid var(--border);
+  overflow: hidden;
 }
 
 .risk-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
+  flex: 1;
+  justify-content: center;
+  padding: 6px 4px;
+  border-right: 1px solid var(--border);
+}
+.risk-item:last-child {
+  border-right: none;
 }
 
 .risk-item .risk-dot {
@@ -287,14 +297,13 @@ body::before {
   font-size: 11px;
   color: var(--text-dim);
   margin-bottom: 6px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .breadcrumb-sep {
   color: var(--text-muted);
-  padding: 0 3px;
+  padding: 0 2px;
 }
 .breadcrumb-file {
   color: var(--text);

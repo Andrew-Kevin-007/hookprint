@@ -148,16 +148,15 @@ function buildFindingCard(finding, isHighConfidence) {
   const evidRow = document.createElement('div');
   evidRow.className = 'card-row card-evidence';
 
+  const breadcrumbText = [
+    dir ? `${dir} / ${filename}` : filename,
+    ev.line,
+    `col ${ev.column}`
+  ].join(' : ');
+
   const bcHtml = `
     <div class="row-label">Evidence</div>
-    <div class="evidence-breadcrumb">
-      ${dir ? `<span class="breadcrumb-dir">${escapeHtml(dir)}</span><span class="breadcrumb-sep">/</span>` : ''}
-      <span class="breadcrumb-file" title="${escapeHtml(full)}">${escapeHtml(filename)}</span>
-      <span class="breadcrumb-sep">:</span>
-      <span class="breadcrumb-line">${escapeHtml(String(ev.line))}</span>
-      <span class="breadcrumb-sep">:</span>
-      <span class="breadcrumb-col">col ${escapeHtml(String(ev.column))}</span>
-    </div>
+    <div class="evidence-breadcrumb" title="${escapeHtml(full)}">${escapeHtml(breadcrumbText)}</div>
   `;
   evidRow.innerHTML = bcHtml;
 
@@ -310,16 +309,12 @@ function render(data) {
   // Build risk bar HTML
   const riskBarHtml = ['high', 'medium', 'low']
     .filter(c => counts[c] > 0)
-    .map(c => {
-      const blocks = Array(counts[c]).fill(`<span class="risk-block ${c}"></span>`).join('');
-      return `
-        <span class="risk-item ${c}">
-          <span class="risk-dot ${c}"></span>
-          <span class="risk-blocks">${blocks}</span>
-          ${counts[c]} ${c.toUpperCase()}
-        </span>
-      `;
-    }).join('');
+    .map(c => `
+      <span class="risk-item ${c}">
+        <span class="risk-dot ${c}"></span>
+        ${counts[c]} ${c.toUpperCase()}
+      </span>
+    `).join('');
 
   // ── Header ──
   const header = document.getElementById('panel-header');
