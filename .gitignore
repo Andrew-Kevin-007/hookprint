@@ -6,3 +6,7 @@ __pycache__/
 node_modules/
 .env
 .DS_Store
+
+# Runtime output of `quorum campaign` (bench/degradation/) — a real measurement
+# ledger generated per-run, never source; see bench/degradation/runner.js.
+bench/degradation/campaign-ledger.jsonl

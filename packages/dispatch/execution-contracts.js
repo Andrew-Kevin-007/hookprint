@@ -25,7 +25,21 @@ export const LEDGER_EVENT_TYPES = [
   // learned degradation curves are built on top of (quality as a function
   // of context load, per provider) — see quality/score.js's
   // `buildQualityScoreEvent()` for the exact payload contract.
-  'batch-quality-scored'
+  'batch-quality-scored',
+  // Phase 3 (bench/degradation/) — one measurement-campaign cell (a single
+  // provider/batchSize/repetition combination) has finished executing,
+  // scoring, and being logged. Additive: a superset of what a single
+  // 'batch-quality-scored' event already carries (this event's own
+  // `taskId` is the deterministic `campaign-<provider>-bs<N>-r<rep>` id,
+  // which is ALSO what makes the campaign runner's resumability check a
+  // plain `readEvents(ledgerPath, { eventType: 'campaign-cell-completed',
+  // taskId })` lookup rather than bespoke matching logic) plus the fields
+  // a later curve-fit needs that aren't otherwise co-located: batchSize,
+  // repetition, and the raw execution status (so a quota/timeout/error
+  // cell is distinguishable from one that never ran at all). See
+  // bench/degradation/runner.js's `runCampaignCell()` for the exact
+  // payload shape.
+  'campaign-cell-completed'
 ];
 
 export function createLedgerEvent({ eventType, taskId, provider, routeId, payload = {}, timestamp = new Date().toISOString() }) {
