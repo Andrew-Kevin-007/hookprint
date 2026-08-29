@@ -1,3 +1,5 @@
+import { fitDegradationCurve } from './ledger/curves.js';
+
 export const MODEL_PROFILES = {
   anthropic: {
     name: 'anthropic',
@@ -189,16 +191,44 @@ export function computeSafeBatchSize(provider, itemCount = 1) {
   return Math.min(estimatedSafe, Math.max(1, itemCount));
 }
 
-export function rankProviders(task, providerList = []) {
+/**
+ * @param {object} task
+ * @param {object[]} [providerList]
+ * @param {{ledgerPath?: string}} [opts] - OMITTED (the default): behaves
+ *   EXACTLY as before this phase -- no ledger read attempted, zero behavior
+ *   change, zero cost for existing callers. When `opts.ledgerPath` IS given,
+ *   each provider's quality estimate tries `ledger/curves.js`'s
+ *   `fitDegradationCurve()` first and uses the LEARNED value for whichever
+ *   bucket (low/medium/high) this call would have used, falling back to the
+ *   existing static `qualityCurve` value bucket-by-bucket (not all-or-
+ *   nothing for the whole provider) wherever the learned curve has no
+ *   sufficient data for that specific bucket -- see curves.js's own
+ *   docstring for what "sufficient" means.
+ */
+export function rankProviders(task, providerList = [], opts = {}) {
   const taskItems = Array.isArray(task?.items) ? task.items : [];
   const candidates = Array.isArray(providerList) ? providerList : Object.values(MODEL_PROFILES);
+  const ledgerPath = opts?.ledgerPath;
 
   return candidates
     .map((provider) => {
       const safeBatch = computeSafeBatchSize(provider, taskItems.length || 1);
       const totalBatches = Math.max(1, Math.ceil((taskItems.length || 1) / safeBatch));
       const estimatedTokens = (provider.tokensPerItem ?? 2000) * (taskItems.length || 1);
-      const profileQuality = provider.qualityCurve ?? { low: 0.88, medium: 0.8, high: 0.72 };
+      const staticQuality = provider.qualityCurve ?? { low: 0.88, medium: 0.8, high: 0.72 };
+
+      let profileQuality = staticQuality;
+      if (ledgerPath) {
+        const fit = fitDegradationCurve(ledgerPath, provider.name);
+        if (fit.curve) {
+          profileQuality = {
+            low: fit.curve.low ?? staticQuality.low,
+            medium: fit.curve.medium ?? staticQuality.medium,
+            high: fit.curve.high ?? staticQuality.high
+          };
+        }
+      }
+
       const qualityEstimate = totalBatches <= 2 ? profileQuality.low : totalBatches <= 4 ? profileQuality.medium : profileQuality.high;
 
       return {
