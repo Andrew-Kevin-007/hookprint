@@ -112,13 +112,17 @@ export function buildPromptFromBatch(routeDecision, batch) {
  *   batch applies to (a slice of the task's `items`, matching one
  *   `batchPlan[].itemIds` entry).
  * @param {{ client?: object, providerName: string, model?: string,
- *   maxTokens?: number, timeoutMs?: number }} options - `client` is the
- *   injected SDK client (a real `Anthropic`/`OpenAI` instance, or a test
- *   stub); when omitted, a real client is constructed from the ambient
- *   environment via the adapter's `createClient()`. `providerName` selects
- *   which adapter handles the call — REQUIRED, since it is what makes
- *   retrying against a fallback provider just a different argument rather
- *   than a different code path.
+ *   maxTokens?: number, timeoutMs?: number, buildPrompt?: (routeDecision: object, batch: Array) => string }} options -
+ *   `client` is the injected SDK client (a real `Anthropic`/`OpenAI`
+ *   instance, or a test stub); when omitted, a real client is constructed
+ *   from the ambient environment via the adapter's `createClient()`.
+ *   `providerName` selects which adapter handles the call — REQUIRED, since
+ *   it is what makes retrying against a fallback provider just a different
+ *   argument rather than a different code path. `buildPrompt`, when given,
+ *   replaces the default `buildPromptFromBatch()` call below — this is the
+ *   seam `executor/envelope.js`'s `buildEnvelopePrompt()` hooks into so a
+ *   caller can request the structured claim envelope without this function
+ *   needing to know anything about that schema.
  * @returns {Promise<{
  *   status: 'success'|'quota_exceeded'|'timeout'|'error',
  *   actualTokens: number,
@@ -130,7 +134,7 @@ export function buildPromptFromBatch(routeDecision, batch) {
  * }>}
  */
 export async function executeBatch(routeDecision, batch, options = {}) {
-  const { client, providerName, model, maxTokens, timeoutMs } = options;
+  const { client, providerName, model, maxTokens, timeoutMs, buildPrompt } = options;
 
   if (!providerName) {
     throw new Error('executeBatch(): options.providerName is required (e.g. "anthropic" or "openai")');
@@ -138,7 +142,7 @@ export async function executeBatch(routeDecision, batch, options = {}) {
 
   const adapter = getProviderAdapter(providerName);
   const resolvedClient = client ?? adapter.createClient();
-  const prompt = buildPromptFromBatch(routeDecision, batch);
+  const prompt = typeof buildPrompt === 'function' ? buildPrompt(routeDecision, batch) : buildPromptFromBatch(routeDecision, batch);
 
   const startedAt = Date.now();
   try {
