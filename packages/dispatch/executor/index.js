@@ -7,25 +7,30 @@
  * task items, execute the batch against the selected provider and return
  * an outcome shaped for execution-contracts.js's `createLedgerEvent()`.
  *
- * Both providers are registered behind the same adapter shape
+ * All six providers are registered behind the same adapter shape
  * (`{ createClient, call, classify, defaultModel }`), so `executeBatch()`
  * has no provider-specific branching in it — it works identically for
- * `providerName: 'anthropic'` and `providerName: 'openai'`, and a caller
- * retrying against `routeDecision.fallbackProviders[0]` just calls it
- * again with a different `providerName`/`client`, no special-casing
- * required. Building that retry loop itself is the dispatcher's job
- * (later blocker) — this module only has to make the retry trivial.
+ * `providerName: 'anthropic'`, `'openai'`, `'groq'`, `'cerebras'`,
+ * `'gemini'`, and `'openrouter'`, and a caller retrying against
+ * `routeDecision.fallbackProviders[0]` just calls it again with a
+ * different `providerName`/`client`, no special-casing required. Building
+ * that retry loop itself is the dispatcher's job (later blocker) — this
+ * module only has to make the retry trivial.
  */
 
 import { createLedgerEvent } from '../execution-contracts.js';
 import { EXECUTION_STATUS } from './errors.js';
 import { createClient as createAnthropicClient, callAnthropic, classifyAnthropicError, DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL, PROVIDER_NAME as ANTHROPIC_PROVIDER } from './anthropic.js';
 import { createClient as createOpenAIClient, callOpenAI, classifyOpenAIError, DEFAULT_MODEL as OPENAI_DEFAULT_MODEL, PROVIDER_NAME as OPENAI_PROVIDER } from './openai.js';
+import { createClient as createGroqClient, callGroq, classifyGroqError, DEFAULT_MODEL as GROQ_DEFAULT_MODEL, PROVIDER_NAME as GROQ_PROVIDER } from './groq.js';
+import { createClient as createCerebrasClient, callCerebras, classifyCerebrasError, DEFAULT_MODEL as CEREBRAS_DEFAULT_MODEL, PROVIDER_NAME as CEREBRAS_PROVIDER } from './cerebras.js';
+import { createClient as createGeminiClient, callGemini, classifyGeminiError, DEFAULT_MODEL as GEMINI_DEFAULT_MODEL, PROVIDER_NAME as GEMINI_PROVIDER } from './gemini.js';
+import { createClient as createOpenRouterClient, callOpenRouter, classifyOpenRouterError, DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL, PROVIDER_NAME as OPENROUTER_PROVIDER } from './openrouter.js';
 
 export { EXECUTION_STATUS };
 
-/** Registry of provider execution adapters. Adding a third provider means
- * adding one entry here — `executeBatch()` itself never changes. */
+/** Registry of provider execution adapters. Adding a provider means adding
+ * one entry here — `executeBatch()` itself never changes. */
 const PROVIDER_ADAPTERS = {
   [ANTHROPIC_PROVIDER]: {
     createClient: createAnthropicClient,
@@ -38,6 +43,30 @@ const PROVIDER_ADAPTERS = {
     call: callOpenAI,
     classify: classifyOpenAIError,
     defaultModel: OPENAI_DEFAULT_MODEL
+  },
+  [GROQ_PROVIDER]: {
+    createClient: createGroqClient,
+    call: callGroq,
+    classify: classifyGroqError,
+    defaultModel: GROQ_DEFAULT_MODEL
+  },
+  [CEREBRAS_PROVIDER]: {
+    createClient: createCerebrasClient,
+    call: callCerebras,
+    classify: classifyCerebrasError,
+    defaultModel: CEREBRAS_DEFAULT_MODEL
+  },
+  [GEMINI_PROVIDER]: {
+    createClient: createGeminiClient,
+    call: callGemini,
+    classify: classifyGeminiError,
+    defaultModel: GEMINI_DEFAULT_MODEL
+  },
+  [OPENROUTER_PROVIDER]: {
+    createClient: createOpenRouterClient,
+    call: callOpenRouter,
+    classify: classifyOpenRouterError,
+    defaultModel: OPENROUTER_DEFAULT_MODEL
   }
 };
 
