@@ -10,6 +10,7 @@
     "test": "hardhat test",
     "node": "hardhat node",
     "demo:local": "hardhat run scripts/demo-local.js",
+    "demo:policy": "hardhat run scripts/demo-policy.js",
     "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia"
   },
   "engines": {
