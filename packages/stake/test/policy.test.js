@@ -54,26 +54,26 @@ function agreementEntry({ providerA, batchIndexA, valueA, providerB, batchIndexB
 /* -------------------------------------------------------------------------- */
 
 describe('policy/identity-registry', function () {
-  it('register + lookup round-trip', function () {
+  it('register + lookup round-trip', async function () {
     const registry = createIdentityRegistry();
-    registry.register('keyA', AGENT_A);
-    expect(registry.lookup('keyA')).to.equal(AGENT_A);
-    expect(registry.has('keyA')).to.equal(true);
+    await registry.register('keyA', AGENT_A);
+    expect(await registry.lookup('keyA')).to.equal(AGENT_A);
+    expect(await registry.has('keyA')).to.equal(true);
   });
 
-  it('lookup of an unregistered keyId returns null, never throws', function () {
+  it('lookup of an unregistered keyId returns null, never throws', async function () {
     const registry = createIdentityRegistry();
     expect(() => registry.lookup('nope')).to.not.throw();
-    expect(registry.lookup('nope')).to.equal(null);
-    expect(registry.has('nope')).to.equal(false);
+    expect(await registry.lookup('nope')).to.equal(null);
+    expect(await registry.has('nope')).to.equal(false);
   });
 
-  it('register rejects a malformed EVM address', function () {
+  it('register rejects a malformed EVM address', async function () {
     const registry = createIdentityRegistry();
     expect(() => registry.register('keyA', 'not-an-address')).to.throw(/well-formed EVM address/);
   });
 
-  it('register rejects an empty keyId or address', function () {
+  it('register rejects an empty keyId or address', async function () {
     const registry = createIdentityRegistry();
     expect(() => registry.register('', AGENT_A)).to.throw();
     expect(() => registry.register('keyA', '')).to.throw();
@@ -81,12 +81,12 @@ describe('policy/identity-registry', function () {
 });
 
 describe('policy/slash-policy -- evaluateQualityFailure', function () {
-  it('a score below threshold triggers shouldSlash:true with a real, documented, proportional amount', function () {
+  it('a score below threshold triggers shouldSlash:true with a real, documented, proportional amount', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
+    await registry.register('agentA', AGENT_A);
     const event = qualityScoreEvent({ provider: 'agentA', combinedScore: 0.1 });
 
-    const result = evaluateQualityFailure(event, { registry });
+    const result = await evaluateQualityFailure(event, { registry });
     expect(result.shouldSlash).to.equal(true);
     expect(result.reasonClass).to.equal('quality_failure');
     expect(result.agent).to.equal(AGENT_A);
@@ -94,44 +94,44 @@ describe('policy/slash-policy -- evaluateQualityFailure', function () {
     expect(result.amountEth).to.be.at.most(0.5);
   });
 
-  it('a score above threshold does not trigger a slash', function () {
+  it('a score above threshold does not trigger a slash', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
+    await registry.register('agentA', AGENT_A);
     const event = qualityScoreEvent({ provider: 'agentA', combinedScore: 0.9 });
 
-    const result = evaluateQualityFailure(event, { registry });
+    const result = await evaluateQualityFailure(event, { registry });
     expect(result.shouldSlash).to.equal(false);
     expect(result.agent).to.equal(null);
     expect(result.amountEth).to.equal(0);
   });
 
-  it('an unregistered agent never triggers a slash regardless of how bad the score is', function () {
+  it('an unregistered agent never triggers a slash regardless of how bad the score is', async function () {
     const registry = createIdentityRegistry();
     const event = qualityScoreEvent({ provider: 'ghost', combinedScore: 0.0 });
 
-    const result = evaluateQualityFailure(event, { registry });
+    const result = await evaluateQualityFailure(event, { registry });
     expect(result.shouldSlash).to.equal(false);
     expect(result.reason).to.equal('agent_not_registered');
   });
 
-  it('worse scores slash more (severity is monotonic), up to the documented cap', function () {
+  it('worse scores slash more (severity is monotonic), up to the documented cap', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    const worst = evaluateQualityFailure(qualityScoreEvent({ provider: 'agentA', combinedScore: 0.0 }), { registry });
-    const mild = evaluateQualityFailure(qualityScoreEvent({ provider: 'agentA', combinedScore: 0.39 }), { registry });
+    await registry.register('agentA', AGENT_A);
+    const worst = await evaluateQualityFailure(qualityScoreEvent({ provider: 'agentA', combinedScore: 0.0 }), { registry });
+    const mild = await evaluateQualityFailure(qualityScoreEvent({ provider: 'agentA', combinedScore: 0.39 }), { registry });
     expect(worst.amountEth).to.be.greaterThan(mild.amountEth);
     expect(worst.amountEth).to.equal(0.5); // MAX_SLASH_AMOUNT_ETH cap, reached at combinedScore 0
   });
 });
 
 describe('policy/slash-policy -- evaluateContradiction', function () {
-  it('a bare contradiction with no corroboration does NOT trigger a slash', function () {
+  it('a bare contradiction with no corroboration does NOT trigger a slash', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     const contradiction = contradictionEntry({ providerA: 'agentA', valueA: 5, providerB: 'agentB', valueB: 60 });
 
-    const result = evaluateContradiction(contradiction, {
+    const result = await evaluateContradiction(contradiction, {
       registry,
       verification: { contradictions: [contradiction], agreements: [], unmatched: [] }
     });
@@ -140,29 +140,29 @@ describe('policy/slash-policy -- evaluateContradiction', function () {
     expect(result.agent).to.equal(null);
   });
 
-  it('the SAME contradiction WITH corroborating third-party agreement DOES trigger a slash against the uncorroborated side, never the corroborated side', function () {
+  it('the SAME contradiction WITH corroborating third-party agreement DOES trigger a slash against the uncorroborated side, never the corroborated side', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     // agentA (5%) and agentB (60%) disagree. A THIRD, independent source (agentC) agrees with agentA.
     const contradiction = contradictionEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentB', batchIndexB: 1, valueB: 60 });
     const agreement = agreementEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentC', batchIndexB: 2, valueB: 6 });
     const verification = { contradictions: [contradiction], agreements: [agreement], unmatched: [] };
 
-    const result = evaluateContradiction(contradiction, { registry, verification });
+    const result = await evaluateContradiction(contradiction, { registry, verification });
     expect(result.shouldSlash).to.equal(true);
     expect(result.agent).to.equal(AGENT_B); // agentB is the uncorroborated/wrong side
     expect(result.reason).to.equal('contradiction_corroborated_by_third_party_agreement');
   });
 
-  it('the SAME contradiction WITH corroborating independent quality failure DOES trigger a slash against the correlated/wrong side, never the other', function () {
+  it('the SAME contradiction WITH corroborating independent quality failure DOES trigger a slash against the correlated/wrong side, never the other', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     const contradiction = contradictionEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentB', batchIndexB: 1, valueB: 60 });
     const correlatedQualityFailures = new Set(['agentB:1']); // agentB's OWN batch independently failed quality
 
-    const result = evaluateContradiction(contradiction, {
+    const result = await evaluateContradiction(contradiction, {
       registry,
       verification: { contradictions: [contradiction], agreements: [], unmatched: [] },
       correlatedQualityFailures
@@ -172,13 +172,13 @@ describe('policy/slash-policy -- evaluateContradiction', function () {
     expect(result.reason).to.equal('contradiction_corroborated_by_independent_quality_failure');
   });
 
-  it('an unregistered wrong-side agent never triggers a slash even when corroborated', function () {
+  it('an unregistered wrong-side agent never triggers a slash even when corroborated', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A); // agentB deliberately NOT registered
+    await registry.register('agentA', AGENT_A); // agentB deliberately NOT registered
     const contradiction = contradictionEntry({ providerA: 'agentA', valueA: 5, providerB: 'agentB', valueB: 60 });
     const agreement = agreementEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentC', batchIndexB: 2, valueB: 6 });
 
-    const result = evaluateContradiction(contradiction, {
+    const result = await evaluateContradiction(contradiction, {
       registry,
       verification: { contradictions: [contradiction], agreements: [agreement], unmatched: [] }
     });
@@ -186,14 +186,14 @@ describe('policy/slash-policy -- evaluateContradiction', function () {
     expect(result.reason).to.equal('agent_not_registered');
   });
 
-  it('when BOTH sides are flagged corroborated-wrong, refuses to pick one (fail-closed)', function () {
+  it('when BOTH sides are flagged corroborated-wrong, refuses to pick one (fail-closed)', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     const contradiction = contradictionEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentB', batchIndexB: 1, valueB: 60 });
     const correlatedQualityFailures = new Set(['agentA:0', 'agentB:1']);
 
-    const result = evaluateContradiction(contradiction, {
+    const result = await evaluateContradiction(contradiction, {
       registry,
       verification: { contradictions: [contradiction], agreements: [], unmatched: [] },
       correlatedQualityFailures
@@ -204,15 +204,15 @@ describe('policy/slash-policy -- evaluateContradiction', function () {
 });
 
 describe('policy/slash-policy -- evaluateBatchOutcome wiring', function () {
-  it('quality_failure and contradiction fire as two separate, distinctly-tagged findings for the same agent', function () {
+  it('quality_failure and contradiction fire as two separate, distinctly-tagged findings for the same agent', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     const event = qualityScoreEvent({ provider: 'agentB', batchIndex: 1, combinedScore: 0.1 });
     const contradiction = contradictionEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentB', batchIndexB: 1, valueB: 60 });
     const verification = { contradictions: [contradiction], agreements: [], unmatched: [] };
 
-    const findings = evaluateBatchOutcome({ qualityScoreEvent: event, verification, registry });
+    const findings = await evaluateBatchOutcome({ qualityScoreEvent: event, verification, registry });
     expect(findings).to.have.lengthOf(2);
     expect(findings[0].reasonClass).to.equal('quality_failure');
     expect(findings[0].shouldSlash).to.equal(true);
@@ -223,14 +223,14 @@ describe('policy/slash-policy -- evaluateBatchOutcome wiring', function () {
     expect(findings[1].reason).to.equal('contradiction_corroborated_by_independent_quality_failure');
   });
 
-  it('no qualityScoreEvent given: only contradiction findings are produced', function () {
+  it('no qualityScoreEvent given: only contradiction findings are produced', async function () {
     const registry = createIdentityRegistry();
-    registry.register('agentA', AGENT_A);
-    registry.register('agentB', AGENT_B);
+    await registry.register('agentA', AGENT_A);
+    await registry.register('agentB', AGENT_B);
     const contradiction = contradictionEntry({ providerA: 'agentA', valueA: 5, providerB: 'agentB', valueB: 60 });
     const verification = { contradictions: [contradiction], agreements: [], unmatched: [] };
 
-    const findings = evaluateBatchOutcome({ qualityScoreEvent: null, verification, registry });
+    const findings = await evaluateBatchOutcome({ qualityScoreEvent: null, verification, registry });
     expect(findings).to.have.lengthOf(1);
     expect(findings[0].reasonClass).to.equal('contradiction');
   });
@@ -250,7 +250,7 @@ describe('policy/index -- evaluateAndSlash (real local Hardhat contract)', funct
     await contract.connect(agentASigner).stake({ value: ethers.parseEther('1.0') });
 
     const registry = createIdentityRegistry();
-    registry.register('agentA', agentASigner.address);
+    await registry.register('agentA', agentASigner.address);
 
     const [beforeAmount] = await contract.stakeOf(agentASigner.address);
     const event = qualityScoreEvent({ provider: 'agentA', combinedScore: 0.1 });
@@ -279,7 +279,7 @@ describe('policy/index -- evaluateAndSlash (real local Hardhat contract)', funct
     await contract.connect(agentASigner).stake({ value: ethers.parseEther('1.0') });
 
     const registry = createIdentityRegistry();
-    registry.register('agentA', agentASigner.address);
+    await registry.register('agentA', agentASigner.address);
 
     const [beforeAmount] = await contract.stakeOf(agentASigner.address);
     const event = qualityScoreEvent({ provider: 'agentA', combinedScore: 0.9 }); // above threshold
@@ -307,8 +307,8 @@ describe('policy/index -- evaluateAndSlash (real local Hardhat contract)', funct
     await contract.connect(agentBSigner).stake({ value: ethers.parseEther('1.0') });
 
     const registry = createIdentityRegistry();
-    registry.register('agentA', agentASigner.address);
-    registry.register('agentB', agentBSigner.address);
+    await registry.register('agentA', agentASigner.address);
+    await registry.register('agentB', agentBSigner.address);
 
     const contradiction = contradictionEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentB', batchIndexB: 1, valueB: 60 });
     const agreement = agreementEntry({ providerA: 'agentA', batchIndexA: 0, valueA: 5, providerB: 'agentC', batchIndexB: 2, valueB: 6 });

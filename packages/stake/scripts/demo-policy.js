@@ -67,8 +67,8 @@ async function main() {
   line();
 
   const registry = createIdentityRegistry();
-  registry.register(agentA.keyId, agentASigner.address);
-  registry.register(agentB.keyId, agentBSigner.address);
+  await registry.register(agentA.keyId, agentASigner.address);
+  await registry.register(agentB.keyId, agentBSigner.address);
   console.log('identity registry: both agents registered.');
   line();
 

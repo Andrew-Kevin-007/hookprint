@@ -93,7 +93,7 @@ function synthesizeBatchClaimId({ provider, taskId, batchIndex }) {
  * @param {{registry, thresholds?:{qualityFailureThreshold?:number, minSlashEth?:number, maxSlashEth?:number}}} deps
  * @returns {{shouldSlash:boolean, agent:string|null, amountEth:number|0, claimId:string, reasonClass:'quality_failure', reason:string, combinedScore:number|null}}
  */
-function evaluateQualityFailure(qualityScoreEvent, { registry, thresholds = {} } = {}) {
+async function evaluateQualityFailure(qualityScoreEvent, { registry, thresholds = {} } = {}) {
   const threshold = Number.isFinite(thresholds.qualityFailureThreshold) ? thresholds.qualityFailureThreshold : QUALITY_FAILURE_THRESHOLD;
   const minEth = Number.isFinite(thresholds.minSlashEth) ? thresholds.minSlashEth : MIN_SLASH_AMOUNT_ETH;
   const maxEth = Number.isFinite(thresholds.maxSlashEth) ? thresholds.maxSlashEth : MAX_SLASH_AMOUNT_ETH;
@@ -117,7 +117,7 @@ function evaluateQualityFailure(qualityScoreEvent, { registry, thresholds = {} }
   // Below threshold. Only NOW does an unregistered identity matter -- never
   // attempt a slash against an unregistered agent, regardless of how bad
   // the score is.
-  const evmAddress = registry ? registry.lookup(provider) : null;
+  const evmAddress = registry ? await registry.lookup(provider) : null;
   if (!evmAddress) {
     return { ...base, shouldSlash: false, agent: null, amountEth: 0, reason: 'agent_not_registered' };
   }
@@ -252,7 +252,7 @@ function hasThirdPartyAgreement(peer, self, agreements) {
  *
  * @returns {{shouldSlash:boolean, agent:string|null, amountEth:number|0, claimId:string, reasonClass:'contradiction', reason:string}}
  */
-function evaluateContradiction(contradiction, { registry, thresholds = {}, verification, correlatedQualityFailures } = {}) {
+async function evaluateContradiction(contradiction, { registry, thresholds = {}, verification, correlatedQualityFailures } = {}) {
   const minEth = Number.isFinite(thresholds.contradictionMinSlashEth) ? thresholds.contradictionMinSlashEth : CONTRADICTION_MIN_SLASH_ETH;
   const maxEth = Number.isFinite(thresholds.contradictionMaxSlashEth) ? thresholds.contradictionMaxSlashEth : CONTRADICTION_MAX_SLASH_ETH;
   const claimId = synthesizeContradictionClaimId(contradiction);
@@ -283,7 +283,7 @@ function evaluateContradiction(contradiction, { registry, thresholds = {}, verif
   }
 
   const wrong = wrongSides[0];
-  const evmAddress = registry ? registry.lookup(wrong.provider) : null;
+  const evmAddress = registry ? await registry.lookup(wrong.provider) : null;
   if (!evmAddress) {
     return { ...base, shouldSlash: false, agent: null, amountEth: 0, reason: 'agent_not_registered' };
   }
@@ -328,12 +328,12 @@ function evaluateContradiction(contradiction, { registry, thresholds = {}, verif
  *
  * @returns {Array<ReturnType<typeof evaluateQualityFailure>|ReturnType<typeof evaluateContradiction>>}
  */
-function evaluateBatchOutcome({ qualityScoreEvent, verification, registry, thresholds } = {}) {
+async function evaluateBatchOutcome({ qualityScoreEvent, verification, registry, thresholds } = {}) {
   const results = [];
 
   let qualityEval = null;
   if (qualityScoreEvent) {
-    qualityEval = evaluateQualityFailure(qualityScoreEvent, { registry, thresholds });
+    qualityEval = await evaluateQualityFailure(qualityScoreEvent, { registry, thresholds });
     results.push(qualityEval);
   }
 
@@ -344,7 +344,7 @@ function evaluateBatchOutcome({ qualityScoreEvent, verification, registry, thres
 
   const contradictions = Array.isArray(verification?.contradictions) ? verification.contradictions : [];
   for (const contradiction of contradictions) {
-    results.push(evaluateContradiction(contradiction, { registry, thresholds, verification, correlatedQualityFailures }));
+    results.push(await evaluateContradiction(contradiction, { registry, thresholds, verification, correlatedQualityFailures }));
   }
 
   return results;

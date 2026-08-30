@@ -38,7 +38,7 @@ const { evaluateBatchOutcome } = require('./slash-policy');
  * }} args
  */
 async function evaluateAndSlash({ qualityScoreEvent, verification, registry, contract, arbiterSigner, thresholds, ethers } = {}) {
-  const findings = evaluateBatchOutcome({ qualityScoreEvent, verification, registry, thresholds });
+  const findings = await evaluateBatchOutcome({ qualityScoreEvent, verification, registry, thresholds });
   const results = [];
 
   for (const evaluation of findings) {
