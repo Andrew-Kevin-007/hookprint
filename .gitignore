@@ -10,3 +10,7 @@ node_modules/
 # Runtime output of `quorum campaign` (bench/degradation/) — a real measurement
 # ledger generated per-run, never source; see bench/degradation/runner.js.
 bench/degradation/campaign-ledger.jsonl
+
+# Runtime output of `quorum run` (bin/quorum.js's cmdRun()) — a real local
+# ledger generated per-run, never source.
+.quorum/

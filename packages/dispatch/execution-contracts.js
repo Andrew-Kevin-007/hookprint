@@ -39,7 +39,30 @@ export const LEDGER_EVENT_TYPES = [
   // cell is distinguishable from one that never ran at all). See
   // bench/degradation/runner.js's `runCampaignCell()` for the exact
   // payload shape.
-  'campaign-cell-completed'
+  'campaign-cell-completed',
+  // Phase 7 (live dashboard wiring, bin/quorum.js's `quorum run`): one real
+  // route decision, DASHBOARD-shaped. `dispatcher/policy.js`'s
+  // `decideRoute()` already writes a THIN 'task-routed' event via its own
+  // `logRouteDecision()` (payload: approved/operatorOverride/decisionPath/
+  // reason only) — that event exists for policy audit, not for dashboard
+  // rendering, and does not carry selectedProvider/qualityTarget/
+  // confidence/batchPlan/fallbackProvider/riskLevel. This is deliberately a
+  // SEPARATE event type rather than overloading 'task-routed' with a second,
+  // incompatible payload shape (a reader would otherwise have to guess which
+  // of two shapes a given 'task-routed' row carries). Payload is exactly
+  // `dispatcher/policy.js`'s `toDashboardEntry(decision)` return value (a
+  // `buildRouteLedgerEntry()` shape) — pure reuse, no new shaping logic.
+  'route-decision-recorded',
+  // Phase 7: one real signed execution trace (`trace/index.js`'s
+  // `assembleExecutionTrace()` + `signExecutionTrace()`) has been produced
+  // for a task. No existing type fits "a whole trace was assembled and
+  // signed" — the closest neighbors ('merge-completed'/
+  // 'merge-contradiction-found'/'merge-incomplete') are written earlier in
+  // the pipeline, before the trace exists, and carry no traceId/attestation.
+  // See bin/quorum.js's `cmdRun()` for the real payload shape (traceId,
+  // status/contradictionCount/agreementCount/unmatchedCount,
+  // meanOutcomeAccuracy, assembledAt, attestation, verified).
+  'execution-trace-recorded'
 ];
 
 export function createLedgerEvent({ eventType, taskId, provider, routeId, payload = {}, timestamp = new Date().toISOString() }) {

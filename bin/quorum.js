@@ -275,6 +275,307 @@ async function cmdWhoami() {
   await whoami();
 }
 
+/**
+ * Turn a bare task string, or a --file's content, into route-contracts.js
+ * `buildTaskRequest()`'s `items[]` shape. A bare description becomes ONE
+ * item (the common case: `quorum run "<task description>"`). A file's
+ * content is split on blank lines into paragraphs, each its own item, so a
+ * multi-paragraph document produces a real multi-batch task — falling back
+ * to the whole file as one item if it has no blank-line breaks at all.
+ */
+function buildItemsFromArg(taskArg, fileContent) {
+  if (fileContent != null) {
+    const paragraphs = fileContent
+      .split(/\r?\n\s*\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const list = paragraphs.length > 0 ? paragraphs : [fileContent.trim()];
+    return list.map((content, idx) => ({ id: `item-${idx + 1}`, content }));
+  }
+  return [{ id: 'item-1', content: taskArg }];
+}
+
+/**
+ * `quorum run "<task description>"` / `quorum run --file <path>` — run ONE
+ * real task through the actual dispatch pipeline end to end, against
+ * whichever providers actually have credentials in `.env` (the same
+ * `PROVIDER_ENV_VARS` gating `cmdCampaign()` already uses), recording real
+ * ledger events locally and, when SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are
+ * set, mirroring them to Supabase for the live dashboard
+ * (`kevin_frontend`'s `GET /api/dashboard/snapshot`, a separate repo).
+ *
+ * This wires together ALREADY-TESTED pieces — `dispatcher/policy.js`'s
+ * `decideRoute()`/`decideFallback()`, `executor/index.js`'s `executeBatch()`/
+ * `buildExecutionLedgerEvent()`, `merge/index.js`'s `mergeRoute()`,
+ * `quality/score.js`'s `buildQualityScoreEvent()`, `trace/index.js`'s
+ * `assembleExecutionTrace()`/`signExecutionTrace()`/`verifyExecutionTrace()`
+ * — in the same order `tests/e2e.test.js` already proves works. No new
+ * routing/scoring/merge logic is written here.
+ *
+ * PROVIDER SELECTION: `decideRoute()`'s reputation/quota machinery (steps
+ * 1-3, PRODUCT-ARCHITECTURE.md Layer 3) needs either real agent predictions
+ * or a configured `totalQuota` per provider — neither exists for a bare CLI
+ * run with no external agent submitting a prediction. Rather than fabricate
+ * either, this uses `decideRoute()`'s OPERATOR-OVERRIDE path
+ * (`options.operatorOverride`) — the real, tested, intended code path for
+ * exactly this situation: an operator (the person running `quorum run`) is
+ * explicitly choosing a provider, not an automated agent predicting one.
+ * The provider chosen is the top-ranked FUNDED provider per
+ * `provider-profiles.js`'s real `rankProviders()` — a real ranking, not an
+ * arbitrary pick. `decideRoute()` still runs its real
+ * `buildOverrideDecision()` path (batch planning, fallback-chain ranking,
+ * ledger logging of the thin 'task-routed' event) unchanged.
+ *
+ * LEDGER EVENTS WRITTEN (local always; Supabase-mirrored when configured):
+ *   'task-routed'              — written automatically by decideRoute()'s
+ *                                 own logRouteDecision() (thin payload, NOT
+ *                                 mirrored to Supabase — see supabase-store.js
+ *                                 header; the dashboard reads the richer
+ *                                 'route-decision-recorded' event below).
+ *   'route-decision-recorded'  — payload = dispatcher/policy.js's
+ *                                 toDashboardEntry(decision), pure reuse.
+ *   'task-completed'/'task-failed' (per batch) — buildExecutionLedgerEvent().
+ *   'batch-quality-scored' (per successfully-parsed batch) — built via
+ *                                 quality/score.js's buildQualityScoreEvent()
+ *                                 directly (NOT via mergeRoute()'s own
+ *                                 options.ledgerPath — that would only write
+ *                                 locally, with no way to also mirror to
+ *                                 Supabase without a double local write; see
+ *                                 inline comment at the call site below).
+ *   'merge-completed'/'merge-contradiction-found'/'merge-incomplete' —
+ *                                 merge/index.js's buildMergeLedgerEvent().
+ *   'execution-trace-recorded' — the new Phase 7 event type (see
+ *                                 execution-contracts.js), payload built from
+ *                                 the real signed trace + a
+ *                                 buildDashboardSnapshot() call for its
+ *                                 already-implemented meanOutcomeAccuracy
+ *                                 math (zero duplicated logic).
+ */
+async function cmdRun() {
+  const args = process.argv.slice(3);
+  let taskArg = null;
+  let filePath = null;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--file') {
+      filePath = args[i + 1];
+      i += 1;
+    } else if (taskArg === null) {
+      taskArg = args[i];
+    }
+  }
+
+  if (!taskArg && !filePath) {
+    console.error('Usage: quorum run "<task description>"  |  quorum run --file <path>');
+    process.exitCode = 1;
+    return;
+  }
+
+  const availableProviders = findAvailableProviders();
+  if (availableProviders.length === 0) {
+    console.log('no provider credentials found; quorum run needs at least one provider API key in .env (see `quorum campaign` for the full list of expected env vars)');
+    return;
+  }
+
+  const { readFileSync } = await import('node:fs');
+  const fileContent = filePath ? readFileSync(filePath, 'utf8') : null;
+
+  const [
+    { buildTaskRequest, analyzeTaskQuality },
+    { decideRoute, decideFallback, toDashboardEntry },
+    { MODEL_PROFILES, rankProviders },
+    { executeBatch, buildPromptFromBatch, buildExecutionLedgerEvent },
+    { buildEnvelopePrompt },
+    { mergeRoute, buildMergeLedgerEvent },
+    { buildQualityScoreEvent },
+    { compareOutcome },
+    { assembleExecutionTrace, signExecutionTrace, verifyExecutionTrace },
+    { predictQuality },
+    { learnedCurveLookup },
+    { appendEvent },
+    { createLedgerEvent, buildDashboardSnapshot },
+    { generateIdentity },
+    { maybeCreateSupabaseLedgerStore }
+  ] = await Promise.all([
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'route-contracts.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'dispatcher', 'policy.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'provider-profiles.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'executor', 'index.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'executor', 'envelope.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'merge', 'index.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'quality', 'score.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'trace', 'outcome.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'trace', 'index.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'profiling', 'predict.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'ledger', 'curves.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'ledger', 'store.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'execution-contracts.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'sign', 'index.js'))),
+    import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'ledger', 'supabase-store.js')))
+  ]);
+
+  const ledgerPath = join(ROOT, '.quorum', 'run-ledger.jsonl');
+  const supabaseStore = maybeCreateSupabaseLedgerStore();
+
+  /** Write one event to the local ledger (always) and the Supabase mirror
+   * (when configured) — a failed mirror write is logged and swallowed, never
+   * aborting a real local run (see supabase-store.js's own header). */
+  async function appendDual(event) {
+    appendEvent(ledgerPath, event);
+    if (supabaseStore) {
+      try {
+        await supabaseStore.appendEvent(event);
+      } catch (err) {
+        console.error(`  [supabase] mirror write failed for ${event.eventType}: ${err.message}`);
+      }
+    }
+  }
+
+  const items = buildItemsFromArg(taskArg, fileContent);
+  const taskId = `task-run-${Date.now()}`;
+  const task = buildTaskRequest({ taskId, kind: 'document-analysis', items, qualityTarget: 0 });
+
+  console.log(`QUORUM run -- task ${taskId}, ${items.length} item(s), funded providers: ${availableProviders.join(', ')}`);
+
+  const analysis = analyzeTaskQuality(task);
+  const workloadClassification = { workloadType: analysis.prediction.workloadType, confidence: analysis.prediction.workloadConfidence };
+  console.log(`  workload: ${workloadClassification.workloadType} (confidence ${workloadClassification.confidence.toFixed(2)})`);
+
+  const fundedProviderList = availableProviders.map((name) => MODEL_PROFILES[name]).filter(Boolean);
+  const ranked = rankProviders(task, fundedProviderList, { ledgerPath });
+  const topProvider = ranked[0]?.provider ?? availableProviders[0];
+
+  const decision = decideRoute(task, {
+    providerList: fundedProviderList,
+    ledgerPath,
+    operatorOverride: { provider: topProvider, reason: 'quorum-run-cli: top-ranked funded provider' }
+  });
+
+  if (!decision.approved) {
+    console.error(`route rejected: ${decision.reason}`);
+    return;
+  }
+  console.log(`  routed to: ${decision.primaryProvider} (fallback chain: ${decision.fallbackProviders.join(', ') || 'none'}), ${decision.batchPlan.length} batch(es)`);
+
+  await appendDual(createLedgerEvent({
+    eventType: 'route-decision-recorded',
+    taskId,
+    provider: decision.primaryProvider,
+    routeId: decision.decisionId,
+    payload: toDashboardEntry(decision)
+  }));
+
+  const batchDefs = decision.batchPlan.map((bp) => ({
+    batchIndex: bp.batchIndex,
+    items: bp.itemIds.map((id) => task.items.find((it) => it.id === id)).filter(Boolean)
+  }));
+
+  const buildPrompt = (rd, batch) => buildEnvelopePrompt(buildPromptFromBatch(rd, batch), { kind: task.kind });
+
+  const batchResults = [];
+  for (const bd of batchDefs) {
+    let providerName = decision.primaryProvider;
+    const attempted = [];
+    let outcome;
+
+    for (;;) {
+      console.log(`  executing batch ${bd.batchIndex} against ${providerName}...`);
+      // eslint-disable-next-line no-await-in-loop -- one batch's retry chain is inherently sequential
+      outcome = await executeBatch(decision, bd.items, { providerName, buildPrompt });
+      attempted.push(providerName);
+      if (outcome.status === 'success') break;
+
+      const fb = decideFallback(decision, outcome, attempted);
+      console.log(`    batch ${bd.batchIndex} failed on ${providerName} (${outcome.status}${outcome.errorClass ? `, ${outcome.errorClass}` : ''}) -- ${fb.reason}`);
+      if (!fb.retry || !fb.nextProvider) break;
+      providerName = fb.nextProvider;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await appendDual(buildExecutionLedgerEvent(decision, outcome, { batchIndex: bd.batchIndex, taskId, provider: providerName }));
+
+    const providerProfile = MODEL_PROFILES[providerName] ?? MODEL_PROFILES[decision.primaryProvider];
+    const contextRatio = providerProfile ? (providerProfile.tokensPerItem * bd.items.length) / providerProfile.contextWindow : null;
+
+    batchResults.push({ provider: providerName, batchIndex: bd.batchIndex, outcome, batch: bd.items, contextRatio });
+  }
+
+  // predictQuality() BEFORE reading mergeRoute()'s scores, so outcomeComparisons
+  // below compares a real prediction against a real measured outcome -- same
+  // ordering tests/e2e.test.js proves works.
+  const predictions = batchDefs.map((bd) => {
+    const br = batchResults.find((b) => b.batchIndex === bd.batchIndex);
+    const providerProfile = MODEL_PROFILES[br.provider] ?? MODEL_PROFILES[decision.primaryProvider];
+    return { batchIndex: bd.batchIndex, prediction: predictQuality(task, providerProfile, workloadClassification, bd.items.length, learnedCurveLookup(ledgerPath)) };
+  });
+
+  // mergeRoute() called WITHOUT options.ledgerPath -- pure, no I/O (see its
+  // own file header: this is its documented no-ledgerPath default). Ledger
+  // writes for 'batch-quality-scored' are done explicitly below instead, via
+  // the same real buildQualityScoreEvent() mergeRoute() would have called
+  // internally -- this is what lets appendDual() mirror them to Supabase too,
+  // which mergeRoute()'s own internal appendEvent() call has no way to do.
+  const mergeResult = mergeRoute(decision, batchResults, { taskId, workloadClassification });
+  console.log(`  merge status: ${mergeResult.status} (${mergeResult.verification.contradictions.length} contradiction(s), ${mergeResult.failedBatches.length} failed batch(es))`);
+
+  for (const qs of mergeResult.qualityScores) {
+    const { provider, batchIndex, contextRatio, ...scoreResult } = qs;
+    // eslint-disable-next-line no-await-in-loop
+    await appendDual(buildQualityScoreEvent({
+      taskId,
+      provider,
+      routeId: decision.decisionId,
+      batchIndex,
+      contextRatio,
+      scoreResult,
+      workloadType: workloadClassification.workloadType
+    }));
+  }
+
+  await appendDual(buildMergeLedgerEvent(decision, mergeResult, { taskId }));
+
+  const outcomeComparisons = mergeResult.qualityScores.map((qs) => {
+    const pred = predictions.find((p) => p.batchIndex === qs.batchIndex)?.prediction;
+    return compareOutcome(pred?.predictedQuality, qs.combinedScore);
+  });
+
+  const assembledAt = new Date().toISOString();
+  const trace = assembleExecutionTrace({ task, workloadClassification, routeDecision: decision, batchResults, mergeResult, outcomeComparisons, assembledAt });
+
+  const identity = generateIdentity();
+  const signed = signExecutionTrace(trace, identity.privateKey, identity.publicKey);
+  const verified = verifyExecutionTrace(signed);
+
+  // Real reuse of buildDashboardSnapshot()'s own meanOutcomeAccuracy math --
+  // execution-contracts.js's computeMeanOutcomeAccuracy() is private
+  // (unexported), so this is how a caller outside that file gets the same
+  // number without reimplementing it.
+  const snapshotPreview = buildDashboardSnapshot({ executionTraces: [trace] });
+  const meanOutcomeAccuracy = snapshotPreview.traces[0]?.meanOutcomeAccuracy ?? null;
+
+  await appendDual(createLedgerEvent({
+    eventType: 'execution-trace-recorded',
+    taskId,
+    provider: decision.primaryProvider,
+    routeId: decision.decisionId,
+    payload: {
+      traceId: trace.traceId,
+      status: mergeResult.status,
+      contradictionCount: mergeResult.verification.contradictions.length,
+      agreementCount: mergeResult.verification.agreements.length,
+      unmatchedCount: mergeResult.verification.unmatched.length,
+      meanOutcomeAccuracy,
+      assembledAt,
+      attestation: signed.attestation,
+      verified
+    }
+  }));
+
+  console.log('');
+  console.log(`Done. taskId=${taskId} traceId=${trace.traceId} verifyExecutionTrace()=${verified}`);
+  console.log(`Local ledger: ${ledgerPath}`);
+  console.log(supabaseStore ? 'Mirrored to Supabase: dispatch_ledger_events' : 'Supabase mirror disabled (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set)');
+}
+
 function cmdHelp() {
   console.log(`
 QUORUM - trust-aware AI execution router (build in progress)
@@ -296,15 +597,19 @@ Commands:
                      GEMINI_API_KEY/GOOGLE_API_KEY, OPENROUTER_API_KEY).
                      Providers with no key are skipped, not fatal. Prints a
                      clear message and does nothing else if none are set.
+  run <task>        Run ONE real task through the full dispatch pipeline
+  run --file <path> (intake -> profile -> route -> execute -> merge -> score
+                     -> sign -> verify) against whichever providers actually
+                     have credentials in .env, recording real ledger events
+                     locally (.quorum/run-ledger.jsonl) and, if SUPABASE_URL /
+                     SUPABASE_SERVICE_ROLE_KEY are set, mirroring them to
+                     Supabase for the live dashboard.
   login             Log in via the browser (opens WEB_ORIGIN's login page,
                      polls for approval, then stores a session locally).
   logout            Revoke and clear the locally stored session.
   whoami            Print the wallet address of the current session, or
                      whether you're logged out / your session expired.
   --help, help      Show this message.
-
-This CLI does not yet run the merge/routing pipeline end to end - that is
-later build-plan work. It exists so the repo is runnable as one project.
 `);
 }
 
@@ -319,6 +624,9 @@ switch (cmd) {
     break;
   case 'campaign':
     await cmdCampaign();
+    break;
+  case 'run':
+    await cmdRun();
     break;
   case 'login':
     await cmdLogin();
