@@ -19,7 +19,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -64,8 +64,28 @@ function sessionFilePath() {
 function saveSessionToFile(session) {
   const filePath = sessionFilePath();
   const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(filePath, JSON.stringify(session), { mode: 0o600 });
+
+  // `writeFileSync`'s `mode` option is only applied when the file is
+  // CREATED — if session.json already existed (leftover from a prior
+  // version, or pre-created by a local attacker with looser permissions so
+  // the write above lands on their existing, laxer file), the write just
+  // happens at whatever mode the file already had, with no correction.
+  // chmodSync closes that gap explicitly on every save, not just the first.
+  //
+  // HONEST LIMITATION: on Windows this call is close to a no-op for
+  // confidentiality. POSIX mode bits don't map to real ACLs there — Node's
+  // `mode`/`chmodSync` on win32 can at most toggle the read-only attribute,
+  // not restrict which other Windows accounts can read the file. Real
+  // per-user confidentiality on Windows would need actual ACL manipulation
+  // (icacls / SetNamedSecurityInfo), which is out of scope here. This file
+  // still relies on the same server-side mitigation described above
+  // (sessions expire, and are revocable from the web) rather than the local
+  // file being a real vault on that platform.
+  if (process.platform !== 'win32') {
+    chmodSync(filePath, 0o600);
+  }
 }
 
 function loadSessionFromFile() {

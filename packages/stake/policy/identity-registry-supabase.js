@@ -71,21 +71,51 @@ function createSupabaseIdentityRegistry({ supabaseUrl, serviceRoleKey } = {}) {
     /**
      * Bind `keyId` to `evmAddress`, upserting on `key_id` — re-registering
      * the same keyId overwrites the prior binding (last write wins), same
-     * convention as `identity-registry.js`'s `register()`. `registeredBy`
-     * is optional (an EVM address, per the `profiles` FK the migration
-     * defines) and stored as-is; omit it to leave it null.
+     * convention as `identity-registry.js`'s `register()` (see that file's
+     * own header: key rotation/re-staking under the same identity is a
+     * plausible real operation, and this module has no basis to judge it).
+     * `registeredBy` is optional (an EVM address, per the `profiles` FK the
+     * migration defines) and, like `evmAddress`, stored lowercased — omit it
+     * to leave it null.
+     *
+     * Both addresses are lowercased before validation/storage because
+     * `profiles.wallet_address` (registered_by's FK target) and every
+     * read/write boundary in the frontend (kevin_frontend, a separate repo)
+     * consistently lowercase wallet addresses; writing a mixed-case
+     * `registeredBy` here would throw a foreign-key violation against a
+     * `profiles` row that only ever exists in lowercase.
+     *
+     * INTENTIONAL ASYMMETRY, NAMED PLAINLY: the frontend's own writer to
+     * this same `identity_registry` table (`kevin_frontend`'s
+     * `/api/registry/agents` POST route) uses a plain `.insert()` —
+     * first-write-wins, 409 on a `key_id` collision. This method still uses
+     * `.upsert()` — last-write-wins — on purpose: `test/identity-registry-
+     * supabase.test.js` ("re-registering the same keyId overwrites the
+     * prior binding") and the in-memory sibling `identity-registry.js`
+     * both depend on overwrite semantics for this Node-side path (CLI /
+     * demo script / test suite key rotation). The real risk this creates:
+     * if the SAME `key_id` is ever registered through both writers, this
+     * module will silently overwrite a binding the frontend's `.insert()`
+     * would have rejected with 409 — the two writers disagree about who
+     * wins a collision on one shared table. Left as-is because today the
+     * two paths are not known to write the same `key_id`s, but a caller
+     * bridging both writers onto the same keyId space should not assume
+     * consistent conflict handling.
      */
     async register(keyId, evmAddress, registeredBy) {
       assertNonEmptyString(keyId, 'keyId');
       assertNonEmptyString(evmAddress, 'evmAddress');
-      if (!EVM_ADDRESS_RE.test(evmAddress)) {
+
+      const normalizedEvmAddress = evmAddress.toLowerCase();
+      if (!EVM_ADDRESS_RE.test(normalizedEvmAddress)) {
         throw new Error(`createSupabaseIdentityRegistry: evmAddress "${evmAddress}" is not a well-formed EVM address (0x + 40 hex chars)`);
       }
+      const normalizedRegisteredBy = registeredBy != null ? registeredBy.toLowerCase() : null;
 
       const row = {
         key_id: keyId,
-        evm_address: evmAddress,
-        registered_by: registeredBy ?? null,
+        evm_address: normalizedEvmAddress,
+        registered_by: normalizedRegisteredBy,
         updated_at: new Date().toISOString()
       };
       const { error } = await client.from(TABLE).upsert(row, { onConflict: 'key_id' });

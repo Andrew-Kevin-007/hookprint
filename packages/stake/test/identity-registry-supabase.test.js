@@ -77,8 +77,25 @@ maybeDescribe('policy/identity-registry-supabase (real Supabase project)', funct
   it('register + lookup round-trip against the real table', async function () {
     const keyId = freshKeyId('roundtrip');
     await registry.register(keyId, AGENT_A);
-    expect(await registry.lookup(keyId)).to.equal(AGENT_A);
+    // register() lowercases evmAddress before writing (matches profiles.wallet_address
+    // and every read/write boundary in the frontend, kevin_frontend) -- AGENT_A itself
+    // is a mixed-case/checksummed address, so lookup() comes back lowercased, not equal
+    // to AGENT_A verbatim.
+    expect(await registry.lookup(keyId)).to.equal(AGENT_A.toLowerCase());
     expect(await registry.has(keyId)).to.equal(true);
+  });
+
+  it('lowercases evmAddress before writing, regardless of the case it was registered with', async function () {
+    const keyId = freshKeyId('lowercase');
+    await registry.register(keyId, AGENT_A); // AGENT_A has uppercase hex chars
+
+    expect(await registry.lookup(keyId)).to.equal(AGENT_A.toLowerCase());
+
+    // Confirm what's actually stored, not just what lookup() hands back --
+    // lookup() could theoretically lowercase on the way out and mask a bug
+    // that wrote the mixed-case value to the row.
+    const { data } = await rawClient.from('identity_registry').select('evm_address').eq('key_id', keyId).maybeSingle();
+    expect(data.evm_address).to.equal(AGENT_A.toLowerCase());
   });
 
   it('lookup of an unregistered keyId resolves to null, never rejects', async function () {
@@ -87,12 +104,12 @@ maybeDescribe('policy/identity-registry-supabase (real Supabase project)', funct
     expect(await registry.has(keyId)).to.equal(false);
   });
 
-  it('re-registering the same keyId overwrites the prior binding (last write wins)', async function () {
+  it('re-registering the same keyId overwrites the prior binding (last write wins) -- this module intentionally keeps .upsert(), see the register() docblock for why that is an asymmetry against the frontend\'s .insert()/409 route', async function () {
     const keyId = freshKeyId('overwrite');
     const AGENT_B = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
     await registry.register(keyId, AGENT_A);
     await registry.register(keyId, AGENT_B);
-    expect(await registry.lookup(keyId)).to.equal(AGENT_B);
+    expect(await registry.lookup(keyId)).to.equal(AGENT_B.toLowerCase());
   });
 
   it('register rejects a malformed EVM address before any network write', async function () {

@@ -13,9 +13,9 @@ process.env.QUORUM_SESSION_BACKEND = 'file';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { saveSession, loadSession, clearSession } from '../lib/auth.js';
 
@@ -69,4 +69,51 @@ test('clearSession on an already-empty session is a safe no-op', async () => {
   cleanup();
   await assert.doesNotReject(clearSession());
   assert.equal(await loadSession(), null);
+});
+
+test('saveSession writes the session file at mode 0600', async () => {
+  cleanup();
+  await saveSession({ sessionToken: 'tok_mode1', walletAddress: '0xMODE1', expiresAt: '2026-09-13T00:00:00.000Z' });
+
+  if (platform() === 'win32') {
+    // Node's `mode` support on win32 does not map to POSIX permission bits
+    // or a real ACL -- statSync(...).mode there is not meaningful evidence
+    // of who can actually read the file, so this test can only confirm the
+    // file was written, not that access is restricted. See the HONEST
+    // LIMITATION comment in bin/lib/auth.js's saveSessionToFile() for why
+    // that gap is left undefended on this platform rather than silently
+    // assumed away.
+    assert.ok(existsSync(FILE_PATH));
+    cleanup();
+    return;
+  }
+
+  const mode = statSync(FILE_PATH).mode & 0o777;
+  assert.equal(mode, 0o600, `expected file mode 0600, got 0${mode.toString(8)}`);
+  cleanup();
+});
+
+test('saveSession corrects the mode of a pre-existing, looser-permissioned session file', async () => {
+  cleanup();
+
+  if (platform() === 'win32') {
+    // Same limitation as above -- chmodSync on win32 does not restrict real
+    // access, so there is nothing meaningful to assert here on this
+    // platform. Documented rather than silently skipped.
+    return;
+  }
+
+  // Simulate a leftover/pre-created file at a looser mode -- writeFileSync's
+  // `mode` option only applies on file CREATION, so without the chmodSync
+  // fix in saveSessionToFile() this file would keep its original 0644 mode
+  // straight through the write below.
+  mkdirSync(dirname(FILE_PATH), { recursive: true });
+  writeFileSync(FILE_PATH, '{}', { mode: 0o644 });
+  assert.equal(statSync(FILE_PATH).mode & 0o777, 0o644, 'test setup: file should start at 0644');
+
+  await saveSession({ sessionToken: 'tok_mode2', walletAddress: '0xMODE2', expiresAt: '2026-09-13T00:00:00.000Z' });
+
+  const mode = statSync(FILE_PATH).mode & 0o777;
+  assert.equal(mode, 0o600, `expected saveSession to correct the mode to 0600, got 0${mode.toString(8)}`);
+  cleanup();
 });
