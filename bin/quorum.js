@@ -253,6 +253,28 @@ async function cmdCampaign() {
   }
 }
 
+/**
+ * `quorum login` / `logout` / `whoami` — session management against the web
+ * app's CLI-login handshake (see bin/lib/auth.js's header comment for the
+ * exact route contract). Dynamically imported the same way cmdCampaign()
+ * imports bench/degradation/*, since these three commands are the only ones
+ * that need it.
+ */
+async function cmdLogin() {
+  const { login } = await import(pathToFileURL(join(ROOT, 'bin', 'lib', 'auth.js')));
+  await login();
+}
+
+async function cmdLogout() {
+  const { logout } = await import(pathToFileURL(join(ROOT, 'bin', 'lib', 'auth.js')));
+  await logout();
+}
+
+async function cmdWhoami() {
+  const { whoami } = await import(pathToFileURL(join(ROOT, 'bin', 'lib', 'auth.js')));
+  await whoami();
+}
+
 function cmdHelp() {
   console.log(`
 QUORUM - trust-aware AI execution router (build in progress)
@@ -274,6 +296,11 @@ Commands:
                      GEMINI_API_KEY/GOOGLE_API_KEY, OPENROUTER_API_KEY).
                      Providers with no key are skipped, not fatal. Prints a
                      clear message and does nothing else if none are set.
+  login             Log in via the browser (opens WEB_ORIGIN's login page,
+                     polls for approval, then stores a session locally).
+  logout            Revoke and clear the locally stored session.
+  whoami            Print the wallet address of the current session, or
+                     whether you're logged out / your session expired.
   --help, help      Show this message.
 
 This CLI does not yet run the merge/routing pipeline end to end - that is
@@ -292,6 +319,15 @@ switch (cmd) {
     break;
   case 'campaign':
     await cmdCampaign();
+    break;
+  case 'login':
+    await cmdLogin();
+    break;
+  case 'logout':
+    await cmdLogout();
+    break;
+  case 'whoami':
+    await cmdWhoami();
     break;
   case '--help':
   case '-h':
