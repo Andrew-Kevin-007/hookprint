@@ -80,6 +80,13 @@ function reportMissingNonInteractive(envPath) {
     console.log(`${green('done')}    every provider slot has at least one key`);
   }
 
+  const supabaseConfigured = Boolean(envMap.SUPABASE_URL && envMap.SUPABASE_SERVICE_ROLE_KEY);
+  console.log(
+    supabaseConfigured
+      ? `${green('done')}    dashboard (Supabase) configured — quorum run will mirror to it`
+      : `${dim('optional')} dashboard (Supabase) not configured — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY unset (quorum run works fine without this; local ledger only)`
+  );
+
   console.log('');
   console.log('run `quorum init` again from an interactive terminal to set these up step by step.');
 }
@@ -134,7 +141,47 @@ export async function runInit(root) {
     }
   }
 
-  // Step 3: login.
+  // Step 3: dashboard (Supabase) — optional. Both SUPABASE_URL and
+  // SUPABASE_SERVICE_ROLE_KEY are read only from .env (see
+  // packages/dispatch/ledger/supabase-store.js's maybeCreateSupabaseLedgerStore(),
+  // the only place that reads them) — when either is unset, `quorum run`
+  // still runs the exact same real pipeline and writes to the local ledger
+  // exactly as it does today; this step only closes the gap the welcome
+  // screen's `dashboard  local ledger only (Supabase not configured)` line
+  // reports. Unlike a provider key, SUPABASE_URL is not a secret (it's a
+  // public project URL) and is prompted with a plain `ask()`; the service
+  // role key IS a secret and uses promptSecret(), same as every provider key
+  // above.
+  console.log('');
+  console.log(bold('Dashboard (Supabase)'));
+  const supabaseConfigured = Boolean(envMap.SUPABASE_URL && envMap.SUPABASE_SERVICE_ROLE_KEY);
+
+  if (supabaseConfigured) {
+    console.log(`${green('✔')} SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY already set`);
+  } else if (await askYesNo('Configure the live dashboard (Supabase project URL + service role key)?')) {
+    console.log(dim('press Enter to skip and configure this later'));
+    const url = await ask('  SUPABASE_URL: ');
+    if (url) {
+      envText = setEnvVar(envText, 'SUPABASE_URL', url);
+      writeFileSync(envPath, envText);
+      envMap.SUPABASE_URL = url;
+      console.log(`  ${green('✔')} saved SUPABASE_URL=${url}`);
+    }
+    const serviceRoleKey = await promptSecret('  SUPABASE_SERVICE_ROLE_KEY: ');
+    if (serviceRoleKey) {
+      envText = setEnvVar(envText, 'SUPABASE_SERVICE_ROLE_KEY', serviceRoleKey);
+      writeFileSync(envPath, envText);
+      envMap.SUPABASE_SERVICE_ROLE_KEY = serviceRoleKey;
+      console.log(`  ${green('✔')} saved SUPABASE_SERVICE_ROLE_KEY=${maskKey(serviceRoleKey)}`);
+    }
+    if (!(envMap.SUPABASE_URL && envMap.SUPABASE_SERVICE_ROLE_KEY)) {
+      console.log(dim('  both are needed to enable the dashboard mirror — run `quorum init` again to finish'));
+    }
+  } else {
+    console.log(dim('  skipped — quorum run works exactly the same without this, writing to the local ledger only'));
+  }
+
+  // Step 4: login.
   console.log('');
   console.log(bold('Login'));
   const { loadSession } = await import('./auth.js');

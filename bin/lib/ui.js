@@ -24,8 +24,8 @@ export const PLAIN_MODE = !process.stdout.isTTY || Boolean(process.env.NO_COLOR)
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
-/** Length of a string as it will actually occupy on screen, ignoring any ANSI colour codes embedded in it — used to size the welcome box correctly even when its lines are already coloured. */
-function visibleLength(text) {
+/** Length of a string as it will actually occupy on screen, ignoring any ANSI colour codes embedded in it — used to size the welcome box correctly even when its lines are already coloured. Exported for bin/lib/runView.js, which sizes stageHeader()'s divider fill the same way. */
+export function visibleLength(text) {
   return text.replace(ANSI_PATTERN, '').length;
 }
 
@@ -110,6 +110,92 @@ export class Spinner {
     this.stop();
     console.log(`${red('✘')} ${message}`);
   }
+}
+
+/**
+ * A one-line divider marking the start of a pipeline stage — `quorum run`'s
+ * seven stages (intake/profile/predict/route/execute/merge/verify) each open
+ * with one of these, so every stage gets the same visual weight rather than
+ * one stage (execute) dominating the terminal just because it prints the
+ * most lines. In PLAIN_MODE this is a bare `[index/total] TITLE` line with a
+ * leading blank for readability — no box-drawing characters, no colour —
+ * so piped output stays simple, grep-friendly text.
+ */
+export function stageHeader(index, total, title, { width = 60 } = {}) {
+  const label = `[${index}/${total}] ${title}`;
+  if (PLAIN_MODE) return `\n${label}`;
+  const coloredLabel = `${accent(`[${index}/${total}]`)} ${bold(title)}`;
+  const fillWidth = Math.max(0, width - label.length - 1);
+  return `\n${coloredLabel} ${dim('─'.repeat(fillWidth))}`;
+}
+
+/**
+ * A compact `current/total` progress indicator for the execute stage, where
+ * `quorum run` processes several batches in sequence and a viewer should be
+ * able to see how far through it is at a glance. PLAIN_MODE renders just the
+ * bare fraction (no block-drawing bar) — still meaningful in piped output,
+ * still a single grep-friendly token.
+ */
+export function progressBar(current, total, { width = 20 } = {}) {
+  const fraction = `${current}/${total}`;
+  if (PLAIN_MODE) return fraction;
+  const safeTotal = Math.max(1, total);
+  const ratio = Math.min(1, Math.max(0, current / safeTotal));
+  const filled = Math.round(ratio * width);
+  const bar = `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`;
+  return `${accent(bar)} ${dim(fraction)}`;
+}
+
+/**
+ * Render a fallback chain (or any ordered provider list) as one arrow-joined
+ * line, e.g. `groq → openrouter → anthropic` — used for the route stage's
+ * planned fallback chain and, with `failed`, for marking which providers in
+ * that chain were actually tried and rejected during execution. Providers
+ * named in `failed` are struck out in colour mode / suffixed `(failed)` in
+ * PLAIN_MODE; an empty chain renders as the literal `none` rather than an
+ * empty string, so a line built around this never goes silently blank.
+ */
+export function renderChain(chain, { failed = [] } = {}) {
+  const list = Array.isArray(chain) ? chain : [];
+  if (list.length === 0) return PLAIN_MODE ? 'none' : dim('none');
+  const sep = PLAIN_MODE ? ' -> ' : ` ${dim('→')} `;
+  return list
+    .map((provider) => {
+      const isFailed = failed.includes(provider);
+      if (PLAIN_MODE) return isFailed ? `${provider}(failed)` : provider;
+      return isFailed ? red(`${provider}✘`) : provider;
+    })
+    .join(sep);
+}
+
+/**
+ * One settled-state status line — the same ✔/✘ vocabulary `Spinner.succeed()`/
+ * `fail()` print, but for stages (profile/predict/route/merge/verify) that
+ * never needed a spinner in the first place because there was nothing
+ * asynchronous to wait on. Keeping the icon/colour mapping here (rather than
+ * duplicating it ad hoc per call site) is what makes every stage's status
+ * lines look like one consistent system instead of five different ones.
+ */
+const STATUS_ICONS = { ok: '✔', fail: '✘', warn: '!', info: 'i' };
+const STATUS_COLORS = { ok: green, fail: red, warn: yellow, info: dim };
+export function statusLine(kind, text) {
+  const icon = STATUS_ICONS[kind] ?? STATUS_ICONS.info;
+  const colorFn = STATUS_COLORS[kind] ?? STATUS_COLORS.info;
+  return `${colorFn(icon)} ${text}`;
+}
+
+/**
+ * Render a short list as a simple branch tree (`├─`/`└─`), two-space
+ * indented — used wherever a stage needs to list several same-shaped items
+ * (ranked providers, planned batches, quality scores) without resorting to
+ * ad hoc bullet characters at each call site.
+ */
+export function treeLines(items) {
+  const list = Array.isArray(items) ? items : [];
+  return list.map((item, i) => {
+    const branch = i === list.length - 1 ? '└─' : '├─';
+    return `  ${PLAIN_MODE ? branch : dim(branch)} ${item}`;
+  });
 }
 
 /** Mask a secret so a confirmation echo or status line never prints the full value — e.g. `gsk_...aB3d`. */

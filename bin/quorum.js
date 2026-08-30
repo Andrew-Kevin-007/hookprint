@@ -29,6 +29,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PROVIDER_ENV_VARS, findAvailableProviders } from './lib/providers.js';
 import { Spinner, renderWelcome } from './lib/ui.js';
+import {
+  batchAttemptLabel,
+  batchFailureLine,
+  batchSuccessLine,
+  renderExecuteStageHeader,
+  renderIntakeStage,
+  renderMergeStage,
+  renderPredictStage,
+  renderProfileStage,
+  renderRouteStage,
+  renderVerifyStage
+} from './lib/runView.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -441,15 +453,20 @@ async function cmdRun() {
   const taskId = `task-run-${Date.now()}`;
   const task = buildTaskRequest({ taskId, kind: 'document-analysis', items, qualityTarget: 0 });
 
-  console.log(`QUORUM run -- task ${taskId}, ${items.length} item(s), funded providers: ${availableProviders.join(', ')}`);
+  console.log(renderIntakeStage({ taskId, itemCount: items.length, availableProviders }));
 
   const analysis = analyzeTaskQuality(task);
   const workloadClassification = { workloadType: analysis.prediction.workloadType, confidence: analysis.prediction.workloadConfidence };
-  console.log(`  workload: ${workloadClassification.workloadType} (confidence ${workloadClassification.confidence.toFixed(2)})`);
+  console.log(renderProfileStage({
+    workloadType: workloadClassification.workloadType,
+    confidence: workloadClassification.confidence,
+    signals: analysis.prediction.workloadSignals
+  }));
 
   const fundedProviderList = availableProviders.map((name) => MODEL_PROFILES[name]).filter(Boolean);
   const ranked = rankProviders(task, fundedProviderList, { ledgerPath });
   const topProvider = ranked[0]?.provider ?? availableProviders[0];
+  console.log(renderPredictStage({ ranked, topProvider }));
 
   const decision = decideRoute(task, {
     providerList: fundedProviderList,
@@ -461,7 +478,7 @@ async function cmdRun() {
     console.error(`route rejected: ${decision.reason}`);
     return;
   }
-  console.log(`  routed to: ${decision.primaryProvider} (fallback chain: ${decision.fallbackProviders.join(', ') || 'none'}), ${decision.batchPlan.length} batch(es)`);
+  console.log(renderRouteStage({ decision }));
 
   await appendDual(createLedgerEvent({
     eventType: 'route-decision-recorded',
@@ -478,27 +495,30 @@ async function cmdRun() {
 
   const buildPrompt = (rd, batch) => buildEnvelopePrompt(buildPromptFromBatch(rd, batch), { kind: task.kind });
 
+  console.log(renderExecuteStageHeader({ batchCount: batchDefs.length }));
+
   const batchResults = [];
-  for (const bd of batchDefs) {
+  for (const [batchPosition, bd] of batchDefs.entries()) {
     let providerName = decision.primaryProvider;
     const attempted = [];
     let outcome;
+    const spinner = new Spinner(batchAttemptLabel({ batchIndex: bd.batchIndex, batchPosition: batchPosition + 1, batchCount: batchDefs.length, providerName })).start();
 
     for (;;) {
-      const spinner = new Spinner(`  executing batch ${bd.batchIndex} against ${providerName}...`).start();
       // eslint-disable-next-line no-await-in-loop -- one batch's retry chain is inherently sequential
       outcome = await executeBatch(decision, bd.items, { providerName, buildPrompt });
       attempted.push(providerName);
 
       if (outcome.status === 'success') {
-        spinner.succeed(`  batch ${bd.batchIndex} completed via ${providerName} (${outcome.latencyMs}ms)`);
+        spinner.succeed(batchSuccessLine({ batchIndex: bd.batchIndex, providerName, outcome }));
         break;
       }
 
       const fb = decideFallback(decision, outcome, attempted);
-      spinner.fail(`  batch ${bd.batchIndex} failed on ${providerName} (${outcome.status}${outcome.errorClass ? `, ${outcome.errorClass}` : ''}) -- ${fb.reason}`);
+      spinner.fail(batchFailureLine({ batchIndex: bd.batchIndex, providerName, outcome, fallback: fb }));
       if (!fb.retry || !fb.nextProvider) break;
       providerName = fb.nextProvider;
+      spinner.update(batchAttemptLabel({ batchIndex: bd.batchIndex, batchPosition: batchPosition + 1, batchCount: batchDefs.length, providerName })).start();
     }
 
     // eslint-disable-next-line no-await-in-loop
@@ -526,7 +546,7 @@ async function cmdRun() {
   // internally -- this is what lets appendDual() mirror them to Supabase too,
   // which mergeRoute()'s own internal appendEvent() call has no way to do.
   const mergeResult = mergeRoute(decision, batchResults, { taskId, workloadClassification });
-  console.log(`  merge status: ${mergeResult.status} (${mergeResult.verification.contradictions.length} contradiction(s), ${mergeResult.failedBatches.length} failed batch(es))`);
+  console.log(renderMergeStage({ mergeResult }));
 
   for (const qs of mergeResult.qualityScores) {
     const { provider, batchIndex, contextRatio, ...scoreResult } = qs;
@@ -563,6 +583,8 @@ async function cmdRun() {
   const snapshotPreview = buildDashboardSnapshot({ executionTraces: [trace] });
   const meanOutcomeAccuracy = snapshotPreview.traces[0]?.meanOutcomeAccuracy ?? null;
 
+  console.log(renderVerifyStage({ traceId: trace.traceId, meanOutcomeAccuracy, keyId: signed.attestation.keyId, verified }));
+
   await appendDual(createLedgerEvent({
     eventType: 'execution-trace-recorded',
     taskId,
@@ -585,6 +607,37 @@ async function cmdRun() {
   console.log(`Done. taskId=${taskId} traceId=${trace.traceId} verifyExecutionTrace()=${verified}`);
   console.log(`Local ledger: ${ledgerPath}`);
   console.log(supabaseStore ? 'Mirrored to Supabase: dispatch_ledger_events' : 'Supabase mirror disabled (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set)');
+
+  // A run that did real work but produced an untrustworthy result must not
+  // report success. Until now the ONLY exitCode=1 path in this function was
+  // the missing-argument usage error, so `quorum run` exited 0 even when
+  // every batch failed authentication and the merge came back INCOMPLETE --
+  // meaning any CI job or shell script gating on `quorum run && deploy`
+  // would have treated a total pipeline failure as a pass. Found by
+  // deliberately forcing every provider to fail auth, not by reading code.
+  //
+  // The three real merge statuses come from merge/index.js:
+  //   CLEAN                -- batches agreed, nothing outstanding
+  //   CONTRADICTIONS_FOUND -- cross-batch check caught a real disagreement
+  //   INCOMPLETE           -- at least one batch never produced a usable result
+  //
+  // CONTRADICTIONS_FOUND is deliberately a FAILURE exit here, not a warning.
+  // Catching a contradiction is the product working exactly as intended, but
+  // the answer it just produced is precisely the kind you must not ship
+  // unreviewed -- that is the entire thesis. Exiting 0 on it would tell a
+  // script "this output is fine to use", which is the opposite of true.
+  //
+  // `verified === false` means verifyExecutionTrace() rejected the signature
+  // over the trace: the record of what happened cannot be trusted, whatever
+  // the merge said.
+  const untrustworthy =
+    mergeResult.status !== 'CLEAN' ||
+    mergeResult.failedBatches.length > 0 ||
+    verified !== true;
+
+  if (untrustworthy) {
+    process.exitCode = 1;
+  }
 }
 
 /**
