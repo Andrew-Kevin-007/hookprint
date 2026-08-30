@@ -23,10 +23,12 @@
  * env var is actually present — see `cmdCampaign()` below.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { PROVIDER_ENV_VARS, findAvailableProviders } from './lib/providers.js';
+import { Spinner, renderWelcome } from './lib/ui.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -81,12 +83,30 @@ const PACKAGES = [
   nodePackage('dispatch', 'packages/dispatch')
 ];
 
+/**
+ * Runs one package's test command and resolves to the exact same shape
+ * `spawnSync` used to produce here (`{...pkg, output, passed}`) — same
+ * command/args/cwd/shell, same stdout+stderr concatenation, same pass rule
+ * (`exit code 0`). The only reason this is `spawn` (async) instead of
+ * `spawnSync` is so the event loop stays free to animate `cmdTest()`'s
+ * spinner while a suite runs; `spawnSync` blocks Node's single thread
+ * entirely, so no timer-driven animation could ever tick during it.
+ */
 function runPackageTests(pkg) {
-  const cwd = join(ROOT, pkg.cwd);
-  const result = spawnSync(pkg.command, pkg.args, { cwd, encoding: 'utf8', shell: pkg.shell ?? false });
-  const output = `${result.stdout || ''}${result.stderr || ''}`;
-  const passed = result.status === 0 && !result.error;
-  return { ...pkg, output, passed };
+  return new Promise((resolve) => {
+    const cwd = join(ROOT, pkg.cwd);
+    const child = spawn(pkg.command, pkg.args, { cwd, shell: pkg.shell ?? false });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+    child.on('error', () => {
+      resolve({ ...pkg, output: `${stdout}${stderr}`, passed: false });
+    });
+    child.on('close', (status) => {
+      resolve({ ...pkg, output: `${stdout}${stderr}`, passed: status === 0 });
+    });
+  });
 }
 
 /**
@@ -106,14 +126,24 @@ function summarize(output) {
   return `${pass}/${total}`;
 }
 
-function cmdTest() {
+/**
+ * In a real TTY this shows a live spinner per package while its suite runs
+ * (`quorum test`'s five suites take ~30s total with zero output otherwise);
+ * in PLAIN_MODE (piped/non-TTY, or NO_COLOR) the spinner is a no-op and the
+ * printed lines are byte-identical to before this file grew a UI layer —
+ * see `quorum test | cat`.
+ */
+async function cmdTest() {
   console.log('QUORUM - running every package test suite');
   console.log('');
-  const results = PACKAGES.map((pkg) => {
-    process.stdout.write(`  ${pkg.name.padEnd(10)} ... `);
-    const r = runPackageTests(pkg);
+  const results = [];
+  for (const pkg of PACKAGES) {
+    const spinner = new Spinner(`${pkg.name.padEnd(10)} running tests...`).start();
+    // eslint-disable-next-line no-await-in-loop -- packages run sequentially, same order as before
+    const r = await runPackageTests(pkg);
+    spinner.stop();
     const summary = summarize(r.output);
-    console.log(`${r.passed ? 'PASS' : 'FAIL'}${summary ? `  (${summary} tests)` : ''}`);
+    console.log(`  ${pkg.name.padEnd(10)} ... ${r.passed ? 'PASS' : 'FAIL'}${summary ? `  (${summary} tests)` : ''}`);
     if (!r.passed) {
       console.log('');
       console.log(`--- ${pkg.name} output ---`);
@@ -121,8 +151,8 @@ function cmdTest() {
       console.log(`--- end ${pkg.name} ---`);
       console.log('');
     }
-    return r;
-  });
+    results.push(r);
+  }
 
   console.log('');
   console.log('-'.repeat(50));
@@ -156,29 +186,6 @@ function cmdBench() {
     shell: false
   });
   process.exitCode = result.status ?? 1;
-}
-
-/**
- * One or more env vars that would let that provider's adapter construct a
- * real client (see each executor/*.js `createClient()`'s own doc comment
- * for which var(s) its SDK resolves). Gemini accepts either name — its SDK
- * (`@google/genai`) resolves `GEMINI_API_KEY` OR `GOOGLE_API_KEY`.
- */
-const PROVIDER_ENV_VARS = {
-  anthropic: ['ANTHROPIC_API_KEY'],
-  openai: ['OPENAI_API_KEY'],
-  groq: ['GROQ_API_KEY'],
-  cerebras: ['CEREBRAS_API_KEY'],
-  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
-  openrouter: ['OPENROUTER_API_KEY']
-};
-
-/** Providers (in PROVIDER_ENV_VARS order) whose credential env var is
- * actually present right now. Never throws, never assumes a key exists. */
-function findAvailableProviders() {
-  return Object.entries(PROVIDER_ENV_VARS)
-    .filter(([, envVars]) => envVars.some((name) => Boolean(process.env[name])))
-    .map(([provider]) => provider);
 }
 
 /**
@@ -478,14 +485,18 @@ async function cmdRun() {
     let outcome;
 
     for (;;) {
-      console.log(`  executing batch ${bd.batchIndex} against ${providerName}...`);
+      const spinner = new Spinner(`  executing batch ${bd.batchIndex} against ${providerName}...`).start();
       // eslint-disable-next-line no-await-in-loop -- one batch's retry chain is inherently sequential
       outcome = await executeBatch(decision, bd.items, { providerName, buildPrompt });
       attempted.push(providerName);
-      if (outcome.status === 'success') break;
+
+      if (outcome.status === 'success') {
+        spinner.succeed(`  batch ${bd.batchIndex} completed via ${providerName} (${outcome.latencyMs}ms)`);
+        break;
+      }
 
       const fb = decideFallback(decision, outcome, attempted);
-      console.log(`    batch ${bd.batchIndex} failed on ${providerName} (${outcome.status}${outcome.errorClass ? `, ${outcome.errorClass}` : ''}) -- ${fb.reason}`);
+      spinner.fail(`  batch ${bd.batchIndex} failed on ${providerName} (${outcome.status}${outcome.errorClass ? `, ${outcome.errorClass}` : ''}) -- ${fb.reason}`);
       if (!fb.retry || !fb.nextProvider) break;
       providerName = fb.nextProvider;
     }
@@ -576,6 +587,35 @@ async function cmdRun() {
   console.log(supabaseStore ? 'Mirrored to Supabase: dispatch_ledger_events' : 'Supabase mirror disabled (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set)');
 }
 
+/**
+ * Bare `quorum` (no args) — a welcome screen, not just help text: the
+ * QUORUM name, a one-line statement of what it does, and REAL checked
+ * status (provider keys found, Supabase dashboard mirror on/off, logged in
+ * or not) plus a next-step nudge. No network call — `loadSession()` is a
+ * local keychain/file read only (see bin/lib/auth.js), so this can never
+ * hang waiting on the web app or a network connection.
+ */
+async function cmdWelcome() {
+  const { loadSession } = await import(pathToFileURL(join(ROOT, 'bin', 'lib', 'auth.js')));
+  const session = await loadSession();
+  const availableProviders = findAvailableProviders();
+  const missingProviders = Object.keys(PROVIDER_ENV_VARS).filter((p) => !availableProviders.includes(p));
+  const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+  console.log(renderWelcome({
+    availableProviders,
+    missingProviders,
+    supabaseConfigured,
+    walletAddress: session?.walletAddress ?? null
+  }));
+}
+
+/** `quorum init` — first-run setup: create `.env`, prompt for missing provider keys, offer to log in. See bin/lib/init.js for the full flow and its non-interactive (no-TTY) behaviour. */
+async function cmdInit() {
+  const { runInit } = await import(pathToFileURL(join(ROOT, 'bin', 'lib', 'init.js')));
+  await runInit(ROOT);
+}
+
 function cmdHelp() {
   console.log(`
 QUORUM - trust-aware AI execution router (build in progress)
@@ -583,6 +623,10 @@ QUORUM - trust-aware AI execution router (build in progress)
 Usage: quorum <command> [args]
 
 Commands:
+  (no command)      Show the welcome screen: what's configured, what isn't,
+                     and what to run next.
+  init              First-run setup: create .env, prompt for any missing
+                     provider key, offer to log in.
   test              Run every package's test suite (align, sign, registry,
                      stake, dispatch) and print a PASS/FAIL summary per
                      package plus a total.
@@ -617,7 +661,7 @@ const cmd = process.argv[2];
 
 switch (cmd) {
   case 'test':
-    cmdTest();
+    await cmdTest();
     break;
   case 'bench':
     cmdBench();
@@ -628,6 +672,9 @@ switch (cmd) {
   case 'run':
     await cmdRun();
     break;
+  case 'init':
+    await cmdInit();
+    break;
   case 'login':
     await cmdLogin();
     break;
@@ -637,10 +684,12 @@ switch (cmd) {
   case 'whoami':
     await cmdWhoami();
     break;
+  case undefined:
+    await cmdWelcome();
+    break;
   case '--help':
   case '-h':
   case 'help':
-  case undefined:
     cmdHelp();
     break;
   default:
