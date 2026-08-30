@@ -93,9 +93,50 @@ export function buildRouteLedgerEntry({
   };
 }
 
-export function buildDashboardSnapshot({ taskRouteDecisions = [], providerProfiles = [] } = {}) {
+/**
+ * Summarize one execution trace's `outcomeComparisons` (see `trace/outcome.js`'s
+ * `compareOutcome()`) into a single dashboard-friendly number: the mean of
+ * `1 - |delta|` across every comparison that carries a finite `delta`,
+ * clamped so a single wildly-off batch cannot push the mean below 0. `null`
+ * when there is nothing to summarize (no comparisons at all) — never a
+ * fabricated 0 or 1, matching this codebase's fail-closed "explicit missing
+ * marker, never a bare misleading number" convention (see e.g.
+ * `ledger/reputation.js`'s `computeTrustScore()`).
+ */
+function computeMeanOutcomeAccuracy(outcomeComparisons) {
+  const list = Array.isArray(outcomeComparisons) ? outcomeComparisons : [];
+  const perComparisonAccuracy = list
+    .filter((c) => Number.isFinite(c?.delta))
+    .map((c) => Math.max(0, 1 - Math.abs(c.delta)));
+
+  if (perComparisonAccuracy.length === 0) return null;
+  const mean = perComparisonAccuracy.reduce((sum, v) => sum + v, 0) / perComparisonAccuracy.length;
+  return Number(mean.toFixed(4));
+}
+
+/**
+ * @param {object} args
+ * @param {object[]} [args.taskRouteDecisions]
+ * @param {object[]} [args.providerProfiles]
+ * @param {object[]} [args.executionTraces] - Phase 6 additive: `trace/index.js`'s
+ *   `assembleExecutionTrace()` results. Omitted (the default, `[]`) — every
+ *   pre-existing field (`summary`/`routes`/`providerHealth`) is computed
+ *   EXACTLY as before this parameter existed; only the new `traces: []` field
+ *   is attached, additively, alongside them.
+ * @param {object[]} [args.degradationCurves] - Phase 6 additive:
+ *   `ledger/curves.js`'s `fitDegradationCurve()` results, one per provider.
+ *   Same additive/omittable contract as `executionTraces` above.
+ */
+export function buildDashboardSnapshot({
+  taskRouteDecisions = [],
+  providerProfiles = [],
+  executionTraces = [],
+  degradationCurves = []
+} = {}) {
   const routes = Array.isArray(taskRouteDecisions) ? taskRouteDecisions : [];
   const providers = Array.isArray(providerProfiles) ? providerProfiles : [];
+  const traces = Array.isArray(executionTraces) ? executionTraces : [];
+  const curves = Array.isArray(degradationCurves) ? degradationCurves : [];
 
   const totalTasks = routes.length;
   const avgConfidence = routes.length
@@ -124,6 +165,22 @@ export function buildDashboardSnapshot({ taskRouteDecisions = [], providerProfil
       safeBatch: provider.safeBatch ?? 0,
       qualityEstimate: provider.qualityEstimate ?? 0,
       totalBatches: provider.totalBatches ?? 1
+    })),
+    // Phase 6 additive fields — summarized, never the raw trace/curve object
+    // (a raw trace could carry, e.g., a full `reasoning` blob; the dashboard
+    // gets only what it needs to render).
+    traces: traces.map((t) => ({
+      traceId: t?.traceId ?? null,
+      status: t?.merge?.status ?? null,
+      contradictionCount: Number.isFinite(t?.merge?.contradictionCount) ? t.merge.contradictionCount : 0,
+      meanOutcomeAccuracy: computeMeanOutcomeAccuracy(t?.outcomeComparisons)
+    })),
+    degradation: curves.map((c) => ({
+      provider: c?.provider ?? null,
+      sampleCount: Number.isFinite(c?.sampleCount) ? c.sampleCount : 0,
+      confidence: c?.confidence ?? 'none',
+      method: c?.method ?? 'insufficient_data',
+      curve: c?.curve ?? null
     }))
   };
 }
