@@ -1,0 +1,32 @@
+name: CI
+
+# Minimal test gate. Did not exist for this repo before 2026-08-31.
+# Runs the full workspace test suite (align/sign/registry/stake/dispatch,
+# 413/414 as of this writing) on a clean install. Does NOT touch Sepolia,
+# any live provider API key, or Supabase -- packages/stake's own tests run
+# against an ephemeral in-process Hardhat chain (no network needed), and
+# every provider adapter is gated cleanly off when its API key env var is
+# absent (see bin/lib/providers.js), so this workflow exercises real code
+# paths without needing any real secret.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm install
+
+      - name: Run full workspace test suite
+        run: node bin/quorum.js test

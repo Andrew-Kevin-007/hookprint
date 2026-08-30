@@ -1,12 +1,13 @@
 {
   "name": "quorum",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "bin": {
-    "quorum": "./bin/quorum.js"
+    "quorum": "bin/quorum.js"
   },
   "scripts": {
     "test": "npm test --workspaces --if-present",
