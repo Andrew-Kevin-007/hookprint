@@ -399,13 +399,27 @@ export function scoreBatch(parseResult, batch, originalItems, batchIndex, provid
  * later degradation-curve fit needs to be able to tell "unknown" apart from
  * "measured zero".
  *
- * @param {{taskId?:string, provider?:string, routeId?:string|null, batchIndex:number, contextRatio:number|null, scoreResult: ReturnType<typeof scoreBatch>}} args
+ * `workloadType` (OPTIONAL — closes the gap `ledger/curves.js`'s file header
+ * used to document as future work): when a caller supplies it (normally
+ * `profiling/classify.js`'s `classifyWorkload(task).workloadType`, threaded
+ * in by `merge/index.js`'s `mergeRoute()`), it is added to `payload` so
+ * `ledger/curves.js`'s `fitDegradationCurve()` can fit a curve scoped to one
+ * workload type, not just per-provider. ADDITIVE, NOT REQUIRED: when omitted
+ * or nullish, the returned payload has NO `workloadType` key at all — the
+ * object is byte-for-byte identical to this function's pre-existing shape,
+ * so every caller that does not know about workload types (and every event
+ * already on disk from before this field existed) keeps working unchanged.
+ * `fitDegradationCurve()` treats such an event as "workload unknown" and
+ * folds it into its provider-wide fallback pool rather than any specific
+ * workload bucket — see that function's own docstring.
+ *
+ * @param {{taskId?:string, provider?:string, routeId?:string|null, batchIndex:number, contextRatio:number|null, scoreResult: ReturnType<typeof scoreBatch>, workloadType?:string|null}} args
  * @returns {object} a `createLedgerEvent()`-shaped event, ready for
  *   `ledger/store.js`'s `appendEvent()` — not appended here (this module
  *   does no I/O, matching `merge/index.js`'s existing build-then-caller-
  *   appends convention for `buildMergeLedgerEvent()`).
  */
-export function buildQualityScoreEvent({ taskId, provider, routeId, batchIndex, contextRatio, scoreResult }) {
+export function buildQualityScoreEvent({ taskId, provider, routeId, batchIndex, contextRatio, scoreResult, workloadType }) {
   return createLedgerEvent({
     eventType: 'batch-quality-scored',
     taskId,
@@ -418,7 +432,12 @@ export function buildQualityScoreEvent({ taskId, provider, routeId, batchIndex, 
       consistencyScore: scoreResult.consistencyScore,
       combinedScore: scoreResult.combinedScore,
       weights: scoreResult.weights,
-      reasons: scoreResult.reasons
+      reasons: scoreResult.reasons,
+      // Additive: present only when a caller actually supplied one. See
+      // this function's own docstring for why this must not default to
+      // `null` (that would still change the payload's key set for every
+      // pre-existing caller).
+      ...(workloadType != null ? { workloadType } : {})
     }
   });
 }

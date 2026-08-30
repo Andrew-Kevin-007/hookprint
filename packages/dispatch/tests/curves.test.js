@@ -6,8 +6,9 @@ import { join } from 'node:path';
 
 import { appendEvent } from '../ledger/store.js';
 import { buildQualityScoreEvent, DETERMINISTIC_WEIGHT, CONSISTENCY_WEIGHT } from '../quality/score.js';
-import { fitDegradationCurve, learnedCurveLookup, MIN_BUCKET_SAMPLES } from '../ledger/curves.js';
+import { fitDegradationCurve, learnedCurveLookup, deriveWorkloadType, MIN_BUCKET_SAMPLES } from '../ledger/curves.js';
 import { staticPriorCurveLookup } from '../profiling/predict.js';
+import { classifyWorkload } from '../profiling/classify.js';
 import { rankProviders, MODEL_PROFILES } from '../provider-profiles.js';
 
 /* -------------------------------------------------------------------------- */
@@ -22,8 +23,9 @@ function makeTempLedgerDir() {
 /** Write one real `batch-quality-scored` event via the REAL builder used in
  * production (`quality/score.js`'s `buildQualityScoreEvent()`), not a
  * hand-rolled object shape, so this test suite is pinned to the real
- * contract rather than a guess at it. */
-function writeQualityEvent(ledgerPath, { taskId = 'task-fixture', provider, batchIndex = 0, contextRatio, combinedScore }) {
+ * contract rather than a guess at it. `workloadType` is optional, same
+ * additive discipline as the real function. */
+function writeQualityEvent(ledgerPath, { taskId = 'task-fixture', provider, batchIndex = 0, contextRatio, combinedScore, workloadType }) {
   const scoreResult = {
     combinedScore,
     deterministicScore: combinedScore,
@@ -31,16 +33,42 @@ function writeQualityEvent(ledgerPath, { taskId = 'task-fixture', provider, batc
     weights: { deterministic: DETERMINISTIC_WEIGHT, consistency: CONSISTENCY_WEIGHT },
     reasons: ['synthetic_fixture_for_curves_test']
   };
-  const event = buildQualityScoreEvent({ taskId, provider, routeId: null, batchIndex, contextRatio, scoreResult });
+  const event = buildQualityScoreEvent({ taskId, provider, routeId: null, batchIndex, contextRatio, scoreResult, workloadType });
   appendEvent(ledgerPath, event);
   return event;
 }
 
-function seedBucket(ledgerPath, provider, contextRatio, scores) {
+function seedBucket(ledgerPath, provider, contextRatio, scores, workloadType) {
   scores.forEach((combinedScore, i) => {
-    writeQualityEvent(ledgerPath, { taskId: `task-${provider}-${contextRatio}-${i}`, provider, batchIndex: i, contextRatio, combinedScore });
+    writeQualityEvent(ledgerPath, { taskId: `task-${provider}-${contextRatio}-${i}`, provider, batchIndex: i, contextRatio, combinedScore, workloadType });
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Fixture tasks -- each classifies deterministically and distinctly via the  */
+/* REAL classifyWorkload() cascade (verified directly below), used across the */
+/* workload-aware tests so nothing here guesses at classification behavior.  */
+/* -------------------------------------------------------------------------- */
+
+const TASK_CODE_ANALYSIS = {
+  items: [
+    {
+      id: 'code-a',
+      content: '```js\nfunction add(a, b) { return a + b; }\nexport class Calc { constructor() { this.total = 0; } }\n```'
+    }
+  ]
+};
+
+const TASK_SUMMARIZATION = {
+  items: [{ id: 'summ-a', content: 'Please summarize this long report. '.repeat(60) }]
+};
+
+const TASK_MULTI_DOC_COMPARISON = {
+  items: [
+    { id: 'cmp-a', content: 'Compare document A and document B in terms of structure and content. This is a comparison task about the versus of two similar things.' },
+    { id: 'cmp-b', content: 'Compare document A and document B in terms of layout and outcome. This is a comparison task about the versus of two similar things.' }
+  ]
+};
 
 /* -------------------------------------------------------------------------- */
 /* 1. fitDegradationCurve -- real arithmetic mean, per bucket                */
@@ -295,4 +323,159 @@ test('rankProviders: opts.ledgerPath with strong learned data for one provider c
   const anthropicWithLedger = withLedger.find((r) => r.provider === 'anthropic');
   const anthropicWithoutLedger = withoutLedger.find((r) => r.provider === 'anthropic');
   assert.equal(anthropicWithLedger.qualityEstimate, anthropicWithoutLedger.qualityEstimate);
+});
+
+/* -------------------------------------------------------------------------- */
+/* 8. WORKLOAD-AWARE fitDegradationCurve -- regression, then real wiring     */
+/* -------------------------------------------------------------------------- */
+
+test('fitDegradationCurve: workloadType OMITTED -- regression, byte-identical to pre-workload-awareness behavior on fixture data that ALSO carries workload tags', (t) => {
+  const { dir, path } = makeTempLedgerDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Same fixture shape as the very first test in this file, but now some
+  // events also carry a workloadType tag -- proving the tag is silently
+  // irrelevant to the 2-arg call, not merely untested.
+  const lowScores = [0.8, 0.85, 0.9, 0.8, 0.85, 0.9]; // mean 0.85
+  seedBucket(path, 'anthropic-regression', 0.3, lowScores.slice(0, 3), 'code_analysis');
+  seedBucket(path, 'anthropic-regression', 0.3, lowScores.slice(3), undefined);
+
+  const fit = fitDegradationCurve(path, 'anthropic-regression');
+
+  assert.deepEqual(
+    Object.keys(fit).sort(),
+    ['confidence', 'curve', 'method', 'provider', 'sampleCount'].sort(),
+    'omitting workloadType must produce EXACTLY the pre-existing 5 keys -- no workloadType/bucketSources leakage'
+  );
+  assert.equal(fit.method, 'learned');
+  assert.ok(Math.abs(fit.curve.low - 0.85) < 1e-9, `expected the provider-wide mean 0.85 regardless of the tags present, got ${fit.curve.low}`);
+  assert.equal(fit.sampleCount, 6, 'sampleCount counts every relevant event for the provider, tagged or not');
+});
+
+test('fitDegradationCurve: workloadType SUPPLIED with enough same-workload-type samples returns the workload-specific value, DIFFERENT from the all-workload-types value for that bucket', (t) => {
+  const { dir, path } = makeTempLedgerDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // low bucket (contextRatio 0.3): 6 'code_analysis' samples at 0.30, PLUS 6
+  // 'summarization' samples at 0.95 -- the provider-wide mean (0.625) is
+  // deliberately far from either tagged mean, so a test that accidentally
+  // read the provider-wide value instead of the workload-specific one would
+  // fail loudly rather than by coincidence.
+  seedBucket(path, 'groq-wa1', 0.3, Array.from({ length: 6 }, () => 0.3), 'code_analysis');
+  seedBucket(path, 'groq-wa1', 0.3, Array.from({ length: 6 }, () => 0.95), 'summarization');
+
+  const providerWideFit = fitDegradationCurve(path, 'groq-wa1'); // no filter -- sanity baseline
+  assert.ok(Math.abs(providerWideFit.curve.low - 0.625) < 1e-9, `sanity: expected provider-wide mean 0.625, got ${providerWideFit.curve.low}`);
+
+  const fit = fitDegradationCurve(path, 'groq-wa1', 'code_analysis');
+  assert.equal(fit.workloadType, 'code_analysis');
+  assert.ok(Math.abs(fit.curve.low - 0.3) < 1e-9, `expected the workload-specific mean 0.3, got ${fit.curve.low}`);
+  assert.notEqual(fit.curve.low, providerWideFit.curve.low, 'must differ from the all-workload-types value for the same bucket');
+  assert.equal(fit.bucketSources.low, 'workload_specific');
+});
+
+test('fitDegradationCurve: per-bucket independence -- one bucket falls back to the provider-wide value (insufficient workload-specific samples), while a DIFFERENT bucket in the SAME call has enough workload-specific samples and returns its specific value', (t) => {
+  const { dir, path } = makeTempLedgerDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // low bucket (0.3): 6 'code_analysis' samples at 0.20 -- sufficient workload-specific data.
+  seedBucket(path, 'groq-wa2', 0.3, Array.from({ length: 6 }, () => 0.2), 'code_analysis');
+
+  // medium bucket (0.75): only 2 'code_analysis' samples at 0.10 (insufficient),
+  // PLUS 6 'reasoning' samples at 0.70 -- provider-wide pool for this bucket
+  // is 8 samples (sufficient), mean = (0.10*2 + 0.70*6) / 8 = 0.55.
+  seedBucket(path, 'groq-wa2', 0.75, Array.from({ length: 2 }, () => 0.1), 'code_analysis');
+  seedBucket(path, 'groq-wa2', 0.75, Array.from({ length: 6 }, () => 0.7), 'reasoning');
+
+  // high bucket: no data at all.
+
+  const fit = fitDegradationCurve(path, 'groq-wa2', 'code_analysis');
+
+  assert.ok(Math.abs(fit.curve.low - 0.2) < 1e-9, `low bucket: expected workload-specific mean 0.2, got ${fit.curve.low}`);
+  assert.equal(fit.bucketSources.low, 'workload_specific');
+
+  assert.ok(Math.abs(fit.curve.medium - 0.55) < 1e-9, `medium bucket: expected provider-wide fallback mean 0.55, got ${fit.curve.medium}`);
+  assert.equal(fit.bucketSources.medium, 'provider_wide', 'medium bucket only had 2 workload-specific samples -- below MIN_BUCKET_SAMPLES -- must fall back');
+
+  assert.equal(fit.curve.high, null, 'high bucket: zero samples of any kind -- must be null');
+  assert.equal(fit.bucketSources.high, null);
+
+  assert.equal(fit.method, 'learned', 'at least one bucket learned -- the whole curve is not insufficient_data');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 9. learnedCurveLookup -- genuinely workload-aware, not decorative         */
+/* -------------------------------------------------------------------------- */
+
+test('learnedCurveLookup: produces a DIFFERENT result for the same (provider, contextRatio) when called with two mock tasks that classify to different workload types', (t) => {
+  const { dir, path } = makeTempLedgerDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Sanity: the two fixture tasks really do classify to different types via
+  // the REAL classifyWorkload() cascade -- not asserted as a given.
+  assert.equal(classifyWorkload(TASK_CODE_ANALYSIS).workloadType, 'code_analysis');
+  assert.equal(classifyWorkload(TASK_SUMMARIZATION).workloadType, 'summarization');
+
+  seedBucket(path, 'anthropic', 0.3, Array.from({ length: MIN_BUCKET_SAMPLES * 2 }, () => 0.3), 'code_analysis');
+  seedBucket(path, 'anthropic', 0.3, Array.from({ length: MIN_BUCKET_SAMPLES * 2 }, () => 0.95), 'summarization');
+
+  const lookup = learnedCurveLookup(path);
+  const resultForCode = lookup(MODEL_PROFILES.anthropic, 0.3, TASK_CODE_ANALYSIS);
+  const resultForSummary = lookup(MODEL_PROFILES.anthropic, 0.3, TASK_SUMMARIZATION);
+
+  assert.ok(Math.abs(resultForCode - 0.3) < 1e-9, `expected the code_analysis-specific value 0.3, got ${resultForCode}`);
+  assert.ok(Math.abs(resultForSummary - 0.95) < 1e-9, `expected the summarization-specific value 0.95, got ${resultForSummary}`);
+  assert.notEqual(resultForCode, resultForSummary, 'the same provider/contextRatio must produce genuinely different results for different workload types');
+});
+
+test('deriveWorkloadType: reuses the real classifyWorkload() cascade, and returns undefined (not a string) for a missing task', () => {
+  assert.equal(deriveWorkloadType(TASK_CODE_ANALYSIS), 'code_analysis');
+  assert.equal(deriveWorkloadType(TASK_MULTI_DOC_COMPARISON), 'multi_document_comparison');
+  assert.equal(deriveWorkloadType(null), undefined);
+  assert.equal(deriveWorkloadType(undefined), undefined);
+});
+
+/* -------------------------------------------------------------------------- */
+/* 10. rankProviders -- workload-aware ranking genuinely differentiates      */
+/* -------------------------------------------------------------------------- */
+
+test('rankProviders: opts.ledgerPath + a task with strong SAME-workload-type learned data ranks a provider differently than the same call with a task classifying to a workload type with NO learned data (graceful provider-wide fallback instead)', (t) => {
+  const { dir, path } = makeTempLedgerDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const codeItem = { id: 'code-a', content: '```js\nfunction add(a, b) { return a + b; }\nexport class Calc { constructor() { this.total = 0; } }\n```' };
+  const cmpBase = 'Compare document A and document B in terms of structure and content. This is a comparison task about the versus of two similar things.';
+  const taskCode = { items: Array.from({ length: 10 }, (_, i) => ({ ...codeItem, id: `code-${i}` })) };
+  const taskCompare = { items: Array.from({ length: 10 }, (_, i) => ({ id: `cmp-${i}`, content: `${cmpBase} variant ${i}` })) };
+
+  assert.equal(classifyWorkload(taskCode).workloadType, 'code_analysis');
+  assert.equal(classifyWorkload(taskCompare).workloadType, 'multi_document_comparison');
+
+  const providers = [MODEL_PROFILES.anthropic, MODEL_PROFILES.openai, MODEL_PROFILES.local];
+
+  // With 10 items, 'local' lands on totalBatches=5 (>4) -> its 'high' bucket
+  // (contextRatio > 0.9) is the one rankProviders() will read. Seed it with
+  // STRONG 'code_analysis' data (0.99) plus a differently-tagged pool
+  // (0.50) so the provider-wide fallback (0.745) is measurably different
+  // from the workload-specific value (0.99) -- a lookup that silently
+  // ignored the workload tag would return 0.745 in both calls below.
+  seedBucket(path, 'local', 0.95, Array.from({ length: MIN_BUCKET_SAMPLES * 2 }, () => 0.99), 'code_analysis');
+  seedBucket(path, 'local', 0.95, Array.from({ length: MIN_BUCKET_SAMPLES * 2 }, () => 0.5), 'summarization');
+
+  const rankedForCode = rankProviders(taskCode, providers, { ledgerPath: path });
+  const rankedForCompare = rankProviders(taskCompare, providers, { ledgerPath: path });
+
+  const localForCode = rankedForCode.find((r) => r.provider === 'local');
+  const localForCompare = rankedForCompare.find((r) => r.provider === 'local');
+
+  assert.ok(Math.abs(localForCode.qualityEstimate - 0.99) < 1e-9, `expected local's code_analysis-specific quality 0.99, got ${localForCode.qualityEstimate}`);
+  assert.ok(Math.abs(localForCompare.qualityEstimate - 0.745) < 1e-9, `expected local's provider-wide fallback quality 0.745 (no multi_document_comparison data exists), got ${localForCompare.qualityEstimate}`);
+  assert.notEqual(localForCode.qualityEstimate, localForCompare.qualityEstimate, 'rankProviders must genuinely consume the workload dimension, not just accept it silently');
+
+  // The ranking POSITION changes too: local's workload-specific 0.99 beats
+  // every static prior, so it ranks first for the code task; with no
+  // matching workload data it falls back to 0.745, well below anthropic's
+  // static low-bucket prior (0.94), so it no longer ranks first.
+  assert.equal(rankedForCode[0].provider, 'local', 'local should rank FIRST when its own learned workload-specific data applies');
+  assert.notEqual(rankedForCompare[0].provider, 'local', 'local should NOT rank first once it falls back to the weaker provider-wide value');
 });

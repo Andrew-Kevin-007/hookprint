@@ -1,4 +1,4 @@
-import { fitDegradationCurve } from './ledger/curves.js';
+import { fitDegradationCurve, deriveWorkloadType } from './ledger/curves.js';
 
 export const MODEL_PROFILES = {
   anthropic: {
@@ -204,11 +204,24 @@ export function computeSafeBatchSize(provider, itemCount = 1) {
  *   nothing for the whole provider) wherever the learned curve has no
  *   sufficient data for that specific bucket -- see curves.js's own
  *   docstring for what "sufficient" means.
+ *
+ *   Workload-aware (additive, only engaged when `opts.ledgerPath` is given):
+ *   `task`'s workload type is derived via `ledger/curves.js`'s shared
+ *   `deriveWorkloadType()` (real `classifyWorkload()` reuse) and passed into
+ *   `fitDegradationCurve()`'s optional third parameter, so the learned value
+ *   used per bucket prefers a curve fitted from THIS workload type, falling
+ *   back to the provider-wide value (and finally the static prior) exactly
+ *   as `fitDegradationCurve()`'s own per-bucket graceful degradation
+ *   describes. Callers do not need to compute or pass a workload type
+ *   themselves -- `task` is already this function's first argument.
  */
 export function rankProviders(task, providerList = [], opts = {}) {
   const taskItems = Array.isArray(task?.items) ? task.items : [];
   const candidates = Array.isArray(providerList) ? providerList : Object.values(MODEL_PROFILES);
   const ledgerPath = opts?.ledgerPath;
+  // Only derived when actually needed -- keeps the no-ledgerPath path a true
+  // no-op, byte-identical to before this phase.
+  const workloadType = ledgerPath ? deriveWorkloadType(task) : undefined;
 
   return candidates
     .map((provider) => {
@@ -219,7 +232,7 @@ export function rankProviders(task, providerList = [], opts = {}) {
 
       let profileQuality = staticQuality;
       if (ledgerPath) {
-        const fit = fitDegradationCurve(ledgerPath, provider.name);
+        const fit = fitDegradationCurve(ledgerPath, provider.name, workloadType);
         if (fit.curve) {
           profileQuality = {
             low: fit.curve.low ?? staticQuality.low,

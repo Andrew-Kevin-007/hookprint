@@ -437,6 +437,73 @@ test('INTEGRATION: mergeRoute() on two mock batches produces one qualityScores e
   }
 });
 
+/* -------------------------------------------------------------------------- */
+/* buildQualityScoreEvent / mergeRoute -- additive workloadType field       */
+/* -------------------------------------------------------------------------- */
+
+test('buildQualityScoreEvent: workloadType is additive -- present and correct when supplied, absent entirely (not null) when omitted', () => {
+  const scoreResult = {
+    combinedScore: 0.5,
+    deterministicScore: 0.5,
+    consistencyScore: 0.5,
+    weights: { deterministic: DETERMINISTIC_WEIGHT, consistency: CONSISTENCY_WEIGHT },
+    reasons: ['fixture']
+  };
+
+  const withType = buildQualityScoreEvent({ taskId: 't', provider: 'anthropic', routeId: null, batchIndex: 0, contextRatio: 0.4, scoreResult, workloadType: 'code_analysis' });
+  assert.equal(withType.payload.workloadType, 'code_analysis');
+
+  const withoutType = buildQualityScoreEvent({ taskId: 't', provider: 'anthropic', routeId: null, batchIndex: 0, contextRatio: 0.4, scoreResult });
+  assert.ok(!('workloadType' in withoutType.payload), 'omitting workloadType must leave the payload with no such key at all');
+
+  const explicitlyNull = buildQualityScoreEvent({ taskId: 't', provider: 'anthropic', routeId: null, batchIndex: 0, contextRatio: 0.4, scoreResult, workloadType: null });
+  assert.ok(!('workloadType' in explicitlyNull.payload), 'an explicit null must behave the same as omitting it -- no key added');
+
+  // Every OTHER field must be identical whether or not workloadType was given.
+  const { workloadType: _omit, ...restWithType } = withType.payload;
+  assert.deepEqual(restWithType, withoutType.payload);
+});
+
+test('mergeRoute(): options.workloadType produces a batch-quality-scored ledger event whose payload carries workloadType with the right value; omitting it produces an event with no such field, exactly matching the pre-change shape', () => {
+  const routeDecision = buildRouteDecision({ taskId: 'task-workload-type', primaryProvider: 'anthropic' });
+  const goodEnvelope = { answer: 'All good, nothing quantified here.', claims: [] };
+
+  const batchResults = [
+    {
+      provider: 'anthropic',
+      batchIndex: 0,
+      outcome: { status: 'success', actualTokens: 10, latencyMs: 1, output: JSON.stringify(goodEnvelope), errorDetail: null, errorClass: null, provider: 'anthropic' }
+    }
+  ];
+
+  const dir = mkdtempSync(join(tmpdir(), 'quorum-merge-workload-type-test-'));
+  try {
+    const withTypePath = join(dir, 'with-type.jsonl');
+    mergeRoute(routeDecision, batchResults, { ledgerPath: withTypePath, workloadType: 'code_analysis' });
+    const withTypeEvents = readEvents(withTypePath, { eventType: 'batch-quality-scored' }).events;
+    assert.equal(withTypeEvents.length, 1);
+    assert.equal(withTypeEvents[0].payload.workloadType, 'code_analysis');
+
+    // Also accepts the whole classifyWorkload() result object, reading .workloadType from it.
+    const viaClassificationPath = join(dir, 'via-classification.jsonl');
+    mergeRoute(routeDecision, batchResults, { ledgerPath: viaClassificationPath, workloadClassification: { workloadType: 'reasoning', confidence: 0.7 } });
+    const viaClassificationEvents = readEvents(viaClassificationPath, { eventType: 'batch-quality-scored' }).events;
+    assert.equal(viaClassificationEvents[0].payload.workloadType, 'reasoning');
+
+    const withoutTypePath = join(dir, 'without-type.jsonl');
+    mergeRoute(routeDecision, batchResults, { ledgerPath: withoutTypePath });
+    const withoutTypeEvents = readEvents(withoutTypePath, { eventType: 'batch-quality-scored' }).events;
+    assert.equal(withoutTypeEvents.length, 1);
+    assert.ok(!('workloadType' in withoutTypeEvents[0].payload), 'omitting options.workloadType must leave the event payload with no such key, exactly matching the pre-change shape');
+
+    // Every other payload field must be identical regardless of the workloadType option.
+    const { workloadType: _omit, ...restWithType } = withTypeEvents[0].payload;
+    assert.deepEqual(restWithType, withoutTypeEvents[0].payload);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('mergeRoute(): without a ledgerPath option, quality scoring is still computed but NO ledger I/O occurs (backward-compatible default)', () => {
   const routeDecision = buildRouteDecision({ taskId: 'task-no-ledger', primaryProvider: 'anthropic' });
   const goodEnvelope = { answer: 'All good, nothing quantified here.', claims: [] };

@@ -80,20 +80,36 @@ function buildAnswer({ parsedBatches, failedBatches, contradictions }) {
  *   degrades the deterministic grounding/truncation checks gracefully (see
  *   `quality/score.js`'s `scoreDeterministic()`) rather than throwing, so
  *   every pre-existing caller of this function keeps working unchanged.
- * @param {{ledgerPath?:string}} [options] - when `ledgerPath` is given, one
- *   `'batch-quality-scored'` ledger event is appended per successfully-parsed
- *   batch (see `quality/score.js`'s `buildQualityScoreEvent()`). Omitted (the
- *   default), `mergeRoute()` performs NO I/O, exactly as before this phase —
- *   this function's own file header states "this module does no I/O itself",
- *   and there is no ledger path already threaded through it to reuse (the
- *   existing `buildMergeLedgerEvent()` below is a pure builder the CALLER
- *   appends via `ledger/store.js`'s `appendEvent()`, e.g. in `tests/merge.test.js`'s
+ * @param {{ledgerPath?:string, workloadType?:string|null, workloadClassification?:{workloadType?:string|null}}} [options] -
+ *   when `ledgerPath` is given, one `'batch-quality-scored'` ledger event is
+ *   appended per successfully-parsed batch (see `quality/score.js`'s
+ *   `buildQualityScoreEvent()`). Omitted (the default), `mergeRoute()`
+ *   performs NO I/O, exactly as before this phase — this function's own file
+ *   header states "this module does no I/O itself", and there is no ledger
+ *   path already threaded through it to reuse (the existing
+ *   `buildMergeLedgerEvent()` below is a pure builder the CALLER appends via
+ *   `ledger/store.js`'s `appendEvent()`, e.g. in `tests/merge.test.js`'s
  *   integration test — there is no site inside this file that already calls
  *   `appendEvent()`). This optional param is a deliberate, minimal addition
  *   for the one thing the task brief asks this function to do that its pure
  *   builder-only convention cannot: write to the ledger AS PART OF calling
  *   `mergeRoute()`, without an unconditional, always-on side effect change
  *   for every existing caller.
+ *
+ *   `options.workloadType` / `options.workloadClassification` (OPTIONAL,
+ *   ADDITIVE — closes the gap `ledger/curves.js`'s file header used to
+ *   document as future work): the caller's `profiling/classify.js`
+ *   `classifyWorkload(task)` result for the task this route belongs to.
+ *   Accepts EITHER a bare `workloadType` string, OR the whole classification
+ *   object (from which `.workloadType` is read) — whichever a caller already
+ *   has on hand. `options.workloadType` wins if both are given. Threaded
+ *   straight through to every `buildQualityScoreEvent()` call this function
+ *   makes, so each recorded `'batch-quality-scored'` event carries which
+ *   workload type produced it. Omitted (the default): every event this
+ *   function builds is IDENTICAL to today's shape — no `workloadType` key at
+ *   all (see `buildQualityScoreEvent()`'s own docstring) — so no existing
+ *   caller's recorded events change shape. Has no effect at all when
+ *   `ledgerPath` is also omitted, since no event is built in that case.
  * @returns {{
  *   answer: string,
  *   provenance: Array<{claimSubject:string, value:number, sourceProvider:string, sourceBatchIndex:number}>,
@@ -153,6 +169,10 @@ export function mergeRoute(routeDecision, batchResults, options = {}) {
 
   const answer = buildAnswer({ parsedBatches, failedBatches, contradictions: verification.contradictions });
 
+  // Additive workload-type dimension (see this function's own JSDoc):
+  // accepts either a bare string or the whole classifyWorkload() result.
+  const workloadType = options.workloadType ?? options.workloadClassification?.workloadType ?? undefined;
+
   // Phase 2: score every successfully-parsed batch (deterministic + cross-
   // batch consistency), and record each to the ledger when a path was given.
   const qualityScores = parsedBatches.map((pb) => {
@@ -165,7 +185,8 @@ export function mergeRoute(routeDecision, batchResults, options = {}) {
         routeId: routeDecision?.decisionId ?? null,
         batchIndex: pb.batchIndex,
         contextRatio: pb.contextRatio,
-        scoreResult
+        scoreResult,
+        workloadType
       });
       appendEvent(options.ledgerPath, event);
     }
