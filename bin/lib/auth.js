@@ -232,18 +232,38 @@ async function extractErrorMessage(res) {
  * true })` — `start` is a cmd.exe built-in (not its own .exe) so it needs a
  * shell either way, but `shell: true` hands the url straight to Node, which
  * warns (DEP0190) that it only concatenates args into the shell command
- * line rather than escaping them. `loginUrl` comes from the server response
- * and isn't something this CLI should trust blindly, so instead this runs
- * `cmd.exe /c start "" <url>` with shell:false — Node does its own argv
- * escaping in that mode instead of a shell re-parsing a raw string. The
- * empty `""` is the window-title arg `start` expects first; without it,
- * a url or title-looking first argument can be misread as the title.
+ * line rather than escaping them.
+ *
+ * An earlier version ran `cmd.exe /c start "" <url>` with shell:false to
+ * avoid that DEP0190 concatenation, reasoning that Node's own argv escaping
+ * (used when spawning a real executable directly, not through a shell)
+ * would keep the url intact. That reasoning missed a second layer: `cmd.exe
+ * /c` re-parses its ENTIRE trailing command line using cmd.exe's own
+ * grammar, in which a bare `&` (outside quotes) is a command separator —
+ * regardless of how Node quoted the argv it handed to CreateProcess. Every
+ * CLI login URL contains `&` (it separates the `requestId` and `state`
+ * query params), so cmd.exe silently split `start "" <url up to the &>`
+ * from `state=<value>` and tried to run the latter as its own command,
+ * which fails with "'state' is not recognized..." — swallowed by
+ * `stdio: 'ignore'`, so the CLI reported "Opening your browser..." with no
+ * error while only the truncated, state-less URL ever reached the browser.
+ * Confirmed by direct repro on this exact code before changing it:
+ * `spawn('cmd.exe', ['/c','echo','X',url])` with `stdio:'inherit'` printed
+ * the truncated echo output followed by cmd.exe's own "not recognized"
+ * error for the `state=...` fragment.
+ *
+ * Fix: hand the url to `explorer.exe` instead of going through cmd.exe at
+ * all. explorer.exe is a normal Win32 executable, not a shell — it takes
+ * the url as a single literal argument and forwards it straight to the
+ * default browser via the URL protocol handler, with no `&`/`|`/`^`
+ * reparsing anywhere in the chain. Verified the same repro's url (with a
+ * live `&` in it) reaches explorer.exe as one untruncated argument.
  */
 function openBrowser(url) {
   try {
     const [command, args] =
       process.platform === 'win32'
-        ? ['cmd.exe', ['/c', 'start', '', url]]
+        ? ['explorer.exe', [url]]
         : [process.platform === 'darwin' ? 'open' : 'xdg-open', [url]];
     const child = spawn(command, args, { stdio: 'ignore', detached: true });
     child.on('error', () => {
