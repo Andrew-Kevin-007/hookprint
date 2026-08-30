@@ -607,6 +607,37 @@ async function cmdRun() {
   console.log(`Done. taskId=${taskId} traceId=${trace.traceId} verifyExecutionTrace()=${verified}`);
   console.log(`Local ledger: ${ledgerPath}`);
   console.log(supabaseStore ? 'Mirrored to Supabase: dispatch_ledger_events' : 'Supabase mirror disabled (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set)');
+
+  // A run that did real work but produced an untrustworthy result must not
+  // report success. Until now the ONLY exitCode=1 path in this function was
+  // the missing-argument usage error, so `quorum run` exited 0 even when
+  // every batch failed authentication and the merge came back INCOMPLETE --
+  // meaning any CI job or shell script gating on `quorum run && deploy`
+  // would have treated a total pipeline failure as a pass. Found by
+  // deliberately forcing every provider to fail auth, not by reading code.
+  //
+  // The three real merge statuses come from merge/index.js:
+  //   CLEAN                -- batches agreed, nothing outstanding
+  //   CONTRADICTIONS_FOUND -- cross-batch check caught a real disagreement
+  //   INCOMPLETE           -- at least one batch never produced a usable result
+  //
+  // CONTRADICTIONS_FOUND is deliberately a FAILURE exit here, not a warning.
+  // Catching a contradiction is the product working exactly as intended, but
+  // the answer it just produced is precisely the kind you must not ship
+  // unreviewed -- that is the entire thesis. Exiting 0 on it would tell a
+  // script "this output is fine to use", which is the opposite of true.
+  //
+  // `verified === false` means verifyExecutionTrace() rejected the signature
+  // over the trace: the record of what happened cannot be trusted, whatever
+  // the merge said.
+  const untrustworthy =
+    mergeResult.status !== 'CLEAN' ||
+    mergeResult.failedBatches.length > 0 ||
+    verified !== true;
+
+  if (untrustworthy) {
+    process.exitCode = 1;
+  }
 }
 
 /**
