@@ -15,7 +15,10 @@ process.env.NO_COLOR = '1';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { accent, bold, box, dim, green, maskKey, promptSecret, red, Spinner, yellow, PLAIN_MODE } from '../lib/ui.js';
+import {
+  accent, bold, box, dim, green, maskKey, progressBar, promptSecret, red,
+  renderChain, Spinner, stageHeader, statusLine, treeLines, yellow, PLAIN_MODE
+} from '../lib/ui.js';
 
 /** Capture whatever a callback writes to stdout, restoring the real write afterward regardless of how the callback exits. */
 function captureStdout(fn) {
@@ -140,6 +143,36 @@ test('promptSecret masks every typed character, honours backspace, and never ech
   const echoed = written.join('');
   assert.ok(!echoed.includes('gsk_ab'), 'the real typed value must never be written to stdout');
   assert.ok(echoed.includes('*'), 'each typed character should echo as a mask character');
+});
+
+test('stageHeader in PLAIN_MODE is a bare "[index/total] TITLE" line, no box-drawing or colour', () => {
+  assert.equal(stageHeader(1, 7, 'INTAKE'), '\n[1/7] INTAKE');
+  assert.equal(stageHeader(7, 7, 'VERIFY'), '\n[7/7] VERIFY');
+});
+
+test('progressBar in PLAIN_MODE is the bare fraction, no block-drawing bar', () => {
+  assert.equal(progressBar(2, 4), '2/4');
+  assert.equal(progressBar(0, 1), '0/1');
+});
+
+test('renderChain in PLAIN_MODE arrow-joins providers and suffixes failed ones, "none" when empty', () => {
+  assert.equal(renderChain(['groq', 'openrouter']), 'groq -> openrouter');
+  assert.equal(renderChain(['groq', 'openrouter'], { failed: ['groq'] }), 'groq(failed) -> openrouter');
+  assert.equal(renderChain([]), 'none');
+});
+
+test('statusLine pairs the right icon with ok/fail/warn/info, defaulting unknown kinds to info', () => {
+  assert.equal(statusLine('ok', 'done'), '✔ done');
+  assert.equal(statusLine('fail', 'broken'), '✘ broken');
+  assert.equal(statusLine('warn', 'careful'), '! careful');
+  assert.equal(statusLine('info', 'fyi'), 'i fyi');
+  assert.equal(statusLine('nonsense', 'x'), 'i x');
+});
+
+test('treeLines branches every item except the last with "├─", the last with "└─"', () => {
+  assert.deepEqual(treeLines(['a', 'b', 'c']), ['  ├─ a', '  ├─ b', '  └─ c']);
+  assert.deepEqual(treeLines(['solo']), ['  └─ solo']);
+  assert.deepEqual(treeLines([]), []);
 });
 
 test('promptSecret resolves empty immediately when stdin is not a TTY, rather than hang', async () => {
