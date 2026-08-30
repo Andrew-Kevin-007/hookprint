@@ -25,6 +25,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync, existsSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PROVIDER_ENV_VARS, findAvailableProviders } from './lib/providers.js';
@@ -43,6 +44,30 @@ import {
 } from './lib/runView.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Where `quorum run` keeps its local ledger.
+ *
+ * NOT under ROOT. ROOT is wherever this CLI is *installed*, which for a
+ * global `npm i -g` is a system directory (Program Files on Windows,
+ * /usr/local/lib on macOS/Linux). Writing a per-user data file into the
+ * package's own install directory works only by accident when you run from
+ * a git clone, and fails outright on any locked-down install -- which would
+ * take `quorum run` down with it, since the local ledger write is the one
+ * write that is deliberately NOT swallowed (see appendDual: a failed
+ * Supabase mirror is survivable, losing the local record is not).
+ *
+ * Mirrors bin/lib/auth.js's own sessionFilePath() exactly -- same platform
+ * split, same `quorum` directory name -- so a user's CLI state all lives in
+ * one predictable place per platform rather than two different ones.
+ */
+function localLedgerPath() {
+  if (platform() === 'win32') {
+    const base = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+    return join(base, 'quorum', 'run-ledger.jsonl');
+  }
+  return join(homedir(), '.quorum', 'run-ledger.jsonl');
+}
 
 /**
  * Load real provider keys from a repo-root `.env` (gitignored — see
@@ -432,14 +457,28 @@ async function cmdRun() {
     import(pathToFileURL(join(ROOT, 'packages', 'dispatch', 'ledger', 'supabase-store.js')))
   ]);
 
-  const ledgerPath = join(ROOT, '.quorum', 'run-ledger.jsonl');
+  const ledgerPath = localLedgerPath();
   const supabaseStore = maybeCreateSupabaseLedgerStore();
 
   /** Write one event to the local ledger (always) and the Supabase mirror
    * (when configured) — a failed mirror write is logged and swallowed, never
-   * aborting a real local run (see supabase-store.js's own header). */
+   * aborting a real local run (see supabase-store.js's own header).
+   *
+   * The local write is deliberately NOT swallowed the same way: the ledger
+   * is the record the dashboard, the learned degradation curves and the
+   * signed trace all read back, so silently losing it would leave a run
+   * looking successful while its evidence went nowhere. It is wrapped only
+   * to turn an unhelpful raw ENOENT/EACCES stack trace into a message that
+   * names the actual path and the actual cause, then still fails. */
   async function appendDual(event) {
-    appendEvent(ledgerPath, event);
+    try {
+      appendEvent(ledgerPath, event);
+    } catch (err) {
+      throw new Error(
+        `could not write the local ledger at ${ledgerPath}: ${err.message}\n` +
+        `  This is where quorum keeps each run's record. Check the directory is writable.`
+      );
+    }
     if (supabaseStore) {
       try {
         await supabaseStore.appendEvent(event);
@@ -698,7 +737,8 @@ Commands:
   run --file <path> (intake -> profile -> route -> execute -> merge -> score
                      -> sign -> verify) against whichever providers actually
                      have credentials in .env, recording real ledger events
-                     locally (.quorum/run-ledger.jsonl) and, if SUPABASE_URL /
+                     locally (~/.quorum/run-ledger.jsonl, or %LOCALAPPDATA%\
+                     quorum\ on Windows) and, if SUPABASE_URL /
                      SUPABASE_SERVICE_ROLE_KEY are set, mirroring them to
                      Supabase for the live dashboard.
   login             Log in via the browser (opens WEB_ORIGIN's login page,
