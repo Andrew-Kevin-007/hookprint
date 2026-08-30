@@ -392,6 +392,13 @@ async function cmdRun() {
   const availableProviders = findAvailableProviders();
   if (availableProviders.length === 0) {
     console.log('no provider credentials found; quorum run needs at least one provider API key in .env (see `quorum campaign` for the full list of expected env vars)');
+    // A run that executes no task at all is exactly as untrustworthy as one
+    // whose merge came back INCOMPLETE (see the untrustworthy check at the
+    // tail of this function) -- a script gating on `quorum run && deploy`
+    // must not see this as a pass. Found the same way that check was found:
+    // by deliberately forcing the real failure (here, unsetting every
+    // provider key) rather than by reading the code.
+    process.exitCode = 1;
     return;
   }
 
