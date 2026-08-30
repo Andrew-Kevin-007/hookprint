@@ -30,6 +30,22 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * Load real provider keys from a repo-root `.env` (gitignored — see
+ * `.env.example` for the exact var names each adapter reads) before any
+ * command runs. Uses Node's native `process.loadEnvFile()` (stable on this
+ * project's Node 24) — zero new dependencies, consistent with this
+ * codebase's zero-dependency-where-possible convention elsewhere.
+ *
+ * Silent no-op when `.env` doesn't exist: `quorum test`/`quorum bench` must
+ * keep working on a fresh clone with no keys at all, and `quorum campaign`
+ * already has its own clear "no credentials found" message for that case.
+ */
+const ENV_FILE = join(ROOT, '.env');
+if (existsSync(ENV_FILE)) {
+  process.loadEnvFile(ENV_FILE);
+}
+
 /** *.test.js files directly inside a directory, as bare filenames — matches each package's own `tests/*.test.js` script. */
 function testFiles(relDir) {
   const abs = join(ROOT, relDir);
