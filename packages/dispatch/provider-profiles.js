@@ -60,10 +60,13 @@ export const MODEL_PROFILES = {
   // any static table indefinitely).
   groq: {
     name: 'groq',
-    // llama-3.3-70b-versatile: confirmed still listed as a production model
-    // at console.groq.com/docs/models (checked 2026-08-29). Context window
-    // 131072 per Groq's own model page (matches Meta's published Llama 3.3
-    // spec).
+    // Model actually used here is executor/groq.js's DEFAULT_MODEL,
+    // `openai/gpt-oss-120b` (llama-3.3-70b-versatile was discontinued
+    // 2026-08-30 -- see that file's own comment for the incident). This
+    // comment previously cited the old model's context window; re-verified
+    // live against `GET /openai/v1/models` on 2026-08-30 with a real key --
+    // gpt-oss-120b reports context_window: 131072, so the number below did
+    // not need to change, only this citation.
     contextWindow: 131072,
     safeContextRatio: 0.6,
     tokensPerItem: 2200,
