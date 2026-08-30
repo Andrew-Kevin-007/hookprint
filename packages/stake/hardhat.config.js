@@ -1,5 +1,10 @@
 require('@nomicfoundation/hardhat-toolbox');
-require('dotenv').config();
+// { quiet: true } suppresses dotenv's own unrelated self-promotional console
+// banner (a real, documented option — verified in node_modules/dotenv's own
+// source, v17.4.2 — this is not a security concern, just unsolicited ad
+// text that has nothing to do with this project and shouldn't appear in a
+// demo's output).
+require('dotenv').config({ quiet: true });
 
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
 const SEPOLIA_PRIVATE_KEY = process.env.SEPOLIA_PRIVATE_KEY;
