@@ -437,7 +437,11 @@ test(
     const groqClient = new GroqSDK({ apiKey: 'gsk_garbage_not_real_00000000000000000000000000' });
     try {
       await groqClient.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        // Auth is rejected before the model name is ever validated, so this
+        // value does not affect the assertion -- kept in sync with
+        // groq.js's DEFAULT_MODEL only so the file stops naming a model
+        // Groq has since discontinued.
+        model: 'openai/gpt-oss-120b',
         max_tokens: 16,
         messages: [{ role: 'user', content: 'hi' }]
       });

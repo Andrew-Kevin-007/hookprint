@@ -34,12 +34,37 @@ import { classifyError } from './errors.js';
 /** The provider name this adapter registers under in executor/index.js. */
 export const PROVIDER_NAME = 'groq';
 
-/** Override with `BATON_DISPATCH_GROQ_MODEL` env var. Groq's free-tier
- * production model with the largest context window among the fast-inference
- * options — confirmed still listed on console.groq.com/docs/models as of
- * 2026-08-29 (some providers have since dropped their Llama offerings
- * entirely, see cerebras.js). */
-export const DEFAULT_MODEL = process.env.BATON_DISPATCH_GROQ_MODEL || 'llama-3.3-70b-versatile';
+/** Override with `BATON_DISPATCH_GROQ_MODEL` env var.
+ *
+ * Was `llama-3.3-70b-versatile` until 2026-08-30, when a real `quorum run`
+ * against a live key returned a genuine `model_not_found` 404. Verified
+ * directly against Groq's own `GET /openai/v1/models` with a real key that
+ * day: the catalog returned 14 models and ZERO Llama chat models — Groq
+ * dropped its Llama offerings entirely, exactly as cerebras.js already
+ * documents happening there. The previous comment claiming the model was
+ * "confirmed still listed as of 2026-08-29" was accurate when written and
+ * wrong one day later, which is the whole reason this constant is
+ * env-overridable.
+ *
+ * `openai/gpt-oss-120b` is the replacement: the largest general-purpose
+ * chat model in Groq's current catalog, and the one a real end-to-end
+ * `quorum run` actually completed against (632 measured tokens, merge
+ * status CLEAN, signed trace verified). Re-check with:
+ *   curl -H "Authorization: Bearer $GROQ_API_KEY" \
+ *        https://api.groq.com/openai/v1/models
+ *
+ * OPERATIONAL NOTE — this is a reasoning model. It spends completion tokens
+ * on a `message.reasoning` field BEFORE emitting `message.content`, and the
+ * budget comes out of the same `max_tokens`. Verified live: with
+ * `max_tokens: 16` the call still returns HTTP 200 but `content` is an empty
+ * string (all 30 completion tokens went to reasoning); with room to finish
+ * it returns `content: "OK"` normally. `executeBatch`'s 4096 default is far
+ * more than enough, but do not lower `maxTokens` toward the low hundreds for
+ * this provider — an empty content string is a malformed envelope, and
+ * envelope.js fails closed on it, so the symptom would surface as an
+ * unexplained batch failure rather than as a truncation warning.
+ */
+export const DEFAULT_MODEL = process.env.BATON_DISPATCH_GROQ_MODEL || 'openai/gpt-oss-120b';
 
 /** The error classes this adapter classifies against — real exports of the
  * installed `groq-sdk`, never re-declared or guessed. */
