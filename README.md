@@ -169,7 +169,7 @@ See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the full first-deploy guide: the
 real cross-repo Supabase migration order (8 files, this repo's 4 first —
 reversing it fails outright), every environment variable this CLI actually
 reads, the `npm publish --dry-run` audit referenced above, and the
-`quorum run` exit-code contract.
+`quorum run` exit-code contract. 
 
 ## Known limitations
 
