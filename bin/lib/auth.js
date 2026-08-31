@@ -234,38 +234,79 @@ async function extractErrorMessage(res) {
  * warns (DEP0190) that it only concatenates args into the shell command
  * line rather than escaping them.
  *
- * An earlier version ran `cmd.exe /c start "" <url>` with shell:false to
- * avoid that DEP0190 concatenation, reasoning that Node's own argv escaping
- * (used when spawning a real executable directly, not through a shell)
- * would keep the url intact. That reasoning missed a second layer: `cmd.exe
- * /c` re-parses its ENTIRE trailing command line using cmd.exe's own
- * grammar, in which a bare `&` (outside quotes) is a command separator —
- * regardless of how Node quoted the argv it handed to CreateProcess. Every
- * CLI login URL contains `&` (it separates the `requestId` and `state`
- * query params), so cmd.exe silently split `start "" <url up to the &>`
- * from `state=<value>` and tried to run the latter as its own command,
- * which fails with "'state' is not recognized..." — swallowed by
- * `stdio: 'ignore'`, so the CLI reported "Opening your browser..." with no
- * error while only the truncated, state-less URL ever reached the browser.
- * Confirmed by direct repro on this exact code before changing it:
- * `spawn('cmd.exe', ['/c','echo','X',url])` with `stdio:'inherit'` printed
- * the truncated echo output followed by cmd.exe's own "not recognized"
- * error for the `state=...` fragment.
+ * ATTEMPT 1: `cmd.exe /c start "" <url>` with shell:false, reasoning that
+ * Node's own argv escaping (used when spawning a real executable directly)
+ * would keep the url intact. Wrong: `cmd.exe /c` re-parses its ENTIRE
+ * trailing command line using cmd.exe's own grammar, where a bare `&`
+ * (outside quotes) is a command separator — regardless of how Node quoted
+ * the argv handed to CreateProcess. Every CLI login URL contains `&` (it
+ * separates `requestId` and `state`), so cmd.exe silently split `start ""
+ * <url up to the &>` from `state=<value>` and tried to run the remainder
+ * as its own command, failing with "'state' is not recognized..." —
+ * swallowed by `stdio: 'ignore'`, so the CLI reported success while only a
+ * truncated, state-less URL ever reached the browser.
  *
- * Fix: hand the url to `explorer.exe` instead of going through cmd.exe at
- * all. explorer.exe is a normal Win32 executable, not a shell — it takes
- * the url as a single literal argument and forwards it straight to the
- * default browser via the URL protocol handler, with no `&`/`|`/`^`
- * reparsing anywhere in the chain. Verified the same repro's url (with a
- * live `&` in it) reaches explorer.exe as one untruncated argument.
+ * ATTEMPT 2: hand the url to `explorer.exe` directly, reasoning that it's
+ * a normal Win32 executable (not a shell) so there's no command-line
+ * re-parsing to truncate the `&`. That part held up under test — the full,
+ * untruncated url really does reach explorer.exe as one argv element. What
+ * it didn't account for: explorer.exe resolving a URL argv into "launch
+ * the registered browser" is not the same operation as double-clicking an
+ * .url file or invoking `ShellExecute` on it, and is not reliable across
+ * every real Windows install — on at least one real machine with a
+ * correctly-registered default browser (verified via the registry:
+ * HKCU\...\UrlAssociations\http\UserChoice → ProgId ChromeHTML, so this is
+ * NOT a missing-default-browser problem), `explorer.exe <url>` opened a
+ * plain File Explorer window instead of Chrome. explorer.exe's URL
+ * handling is legacy/incidental behavior, not its documented purpose, and
+ * evidently not dependable enough to build a CLI's login flow on.
+ *
+ * FIX (attempt 3): the same mechanism `start` itself uses under the hood —
+ * still via cmd.exe, but built the way tools that actually solve this
+ * problem for a living do it (this mirrors the well-tested approach in the
+ * `open` npm package, used by thousands of CLIs for exactly this). The key
+ * pieces:
+ *   - `windowsVerbatimArgs: true` tells Node to hand the argv straight to
+ *     CreateProcess with NO escaping of its own, so this function has full,
+ *     unambiguous control over the exact command line cmd.exe receives —
+ *     no second layer of quoting fighting the first.
+ *   - `cmd /S /C "<command>"` (not plain `/C`) is the documented way to
+ *     pass a command line containing its own quotes through cmd.exe without
+ *     it stripping the wrong pair. `/S` changes the quote-stripping rule so
+ *     that ONLY the single outer quote pair wrapping the whole string is
+ *     removed, leaving inner quotes (the ones around the url) intact.
+ *   - `start "" /b "<url>"` — the empty `""` is the window-title arg `start`
+ *     expects first (without it, a quoted url-looking first argument is
+ *     misread as the title); `/b` runs without opening a new console
+ *     window; the url stays wrapped in its own quotes.
+ * Because the url is inside its own quote pair when cmd.exe's parser sees
+ * it, a `&` inside those quotes is data, not a command separator — cmd.exe
+ * only treats `&` as a separator when it appears unquoted. This is the
+ * actual fix for the ATTEMPT 1 bug, done in a way that still goes through
+ * the OS's real "open this with its registered handler" path (`start`)
+ * rather than ATTEMPT 2's less-reliable explorer.exe shortcut.
  */
 function openBrowser(url) {
   try {
-    const [command, args] =
-      process.platform === 'win32'
-        ? ['explorer.exe', [url]]
-        : [process.platform === 'darwin' ? 'open' : 'xdg-open', [url]];
-    const child = spawn(command, args, { stdio: 'ignore', detached: true });
+    if (process.platform === 'win32') {
+      // One single command-line string, built by hand -- windowsVerbatimArgs
+      // means Node will NOT re-quote or re-escape this. See the block
+      // comment above for exactly why each character here is load-bearing.
+      const commandLine = `"start "" /b "${url}""`;
+      const child = spawn('cmd.exe', ['/S', '/C', commandLine], {
+        stdio: 'ignore',
+        detached: true,
+        windowsVerbatimArgs: true
+      });
+      child.on('error', () => {
+        // no display / no handler registered — the printed URL above is the real fallback
+      });
+      child.unref();
+      return;
+    }
+
+    const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const child = spawn(command, [url], { stdio: 'ignore', detached: true });
     child.on('error', () => {
       // no display / no handler registered — the printed URL above is the real fallback
     });
