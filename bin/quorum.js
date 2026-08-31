@@ -340,6 +340,77 @@ function buildItemsFromArg(taskArg, fileContent) {
 }
 
 /**
+ * TEST-ONLY SEAM — inert unless `QUORUM_TEST_ONLY_SCENARIO` is set.
+ *
+ * `cmdRun()`'s untrustworthy-exit-code contract (see that function's own
+ * tail comment, above `const untrustworthy = ...`) had three branches with
+ * zero test coverage: reaching CONTRADICTIONS_FOUND, a non-empty
+ * failedBatches, or verified !== true for real requires either a live
+ * provider key returning a genuinely bad/conflicting response (flaky, costs
+ * money, needs network — unacceptable for a test suite) or a seam inside
+ * cmdRun(), which had none. This function IS that seam, and only for the
+ * one thing that truly cannot be exercised without a real network call: the
+ * batch's raw provider response. `bin/test/run-exitcode-scenarios.test.js`
+ * is the only caller that ever sets `QUORUM_TEST_ONLY_SCENARIO` — no real
+ * `quorum run` invocation, `.env.example`, or documented config sets it, so
+ * this function is never invoked outside that test file.
+ *
+ * Every other real function in the pipeline still runs completely
+ * unmodified against whatever this returns: decideFallback(), mergeRoute(),
+ * buildQualityScoreEvent(), assembleExecutionTrace(), signExecutionTrace(),
+ * verifyExecutionTrace(). This does NOT prove the real provider SDKs/HTTP
+ * layer behave a certain way — only that cmdRun() correctly wires whatever
+ * mergeRoute()/verifyExecutionTrace() actually decide into process.exitCode.
+ * See the test file's header for exactly what each scenario proves.
+ *
+ * @param {string} providerName
+ * @param {number} batchIndex
+ * @param {'clean'|'bad_signature'|'contradiction'|'failed_batch'} scenario
+ */
+function stubBatchOutcomeForTest(providerName, batchIndex, scenario) {
+  const envelope = (claims) => JSON.stringify({ answer: 'stub answer (QUORUM_TEST_ONLY_SCENARIO)', claims });
+  const base = { actualTokens: 32, latencyMs: 1, provider: providerName };
+
+  if (scenario === 'failed_batch' && batchIndex > 0) {
+    // errorClass 'AuthenticationError' is deliberate: dispatcher/policy.js's
+    // shouldRetryOnFallback() only retries 'quota_exceeded'/'timeout'/an
+    // APIConnectionError -- an AuthenticationError is NOT retried, so this
+    // lands in mergeRoute()'s real failedBatches[] after exactly one
+    // attempt, deterministically, with no fallback-chain timing to control.
+    return {
+      ...base,
+      status: 'error',
+      output: null,
+      errorClass: 'AuthenticationError',
+      errorDetail: 'stub: forced failure (QUORUM_TEST_ONLY_SCENARIO=failed_batch)'
+    };
+  }
+
+  if (scenario === 'contradiction') {
+    // Same subject (so merge/consistency.js's subjectsMatch() links them),
+    // 10% vs 80% on a percent unit -- normalized ratio delta is 70 points
+    // against a 15% relative-tolerance threshold, clearing it by a wide
+    // margin so this is never a threshold-adjacent flake.
+    const value = batchIndex === 0 ? 10 : 80;
+    return {
+      ...base,
+      status: 'success',
+      output: envelope([
+        { subject: 'stub contradiction subject', value, unit: 'percent', denominator: null, basis: null, qualifier: 'measured', confidence: 0.9 }
+      ]),
+      errorClass: null,
+      errorDetail: null
+    };
+  }
+
+  // 'clean' and 'bad_signature': every batch succeeds with an empty (but
+  // schema-valid -- see executor/envelope.js's parseEnvelope()) claims
+  // array, so crossCheckBatches() has nothing to compare and mergeRoute()
+  // reports CLEAN.
+  return { ...base, status: 'success', output: envelope([]), errorClass: null, errorDetail: null };
+}
+
+/**
  * `quorum run "<task description>"` / `quorum run --file <path>` — run ONE
  * real task through the actual dispatch pipeline end to end, against
  * whichever providers actually have credentials in `.env` (the same
@@ -495,6 +566,11 @@ async function cmdRun() {
     }
   }
 
+  // See stubBatchOutcomeForTest()'s own header: undefined in every real
+  // invocation of this command, so the two branches below that check it are
+  // dead code unless a test explicitly sets this env var.
+  const TEST_SCENARIO = process.env.QUORUM_TEST_ONLY_SCENARIO || null;
+
   const items = buildItemsFromArg(taskArg, fileContent);
   const taskId = `task-run-${Date.now()}`;
   const task = buildTaskRequest({ taskId, kind: 'document-analysis', items, qualityTarget: 0 });
@@ -552,7 +628,9 @@ async function cmdRun() {
 
     for (;;) {
       // eslint-disable-next-line no-await-in-loop -- one batch's retry chain is inherently sequential
-      outcome = await executeBatch(decision, bd.items, { providerName, buildPrompt });
+      outcome = TEST_SCENARIO
+        ? stubBatchOutcomeForTest(providerName, bd.batchIndex, TEST_SCENARIO)
+        : await executeBatch(decision, bd.items, { providerName, buildPrompt });
       attempted.push(providerName);
 
       if (outcome.status === 'success') {
@@ -619,7 +697,13 @@ async function cmdRun() {
   const trace = assembleExecutionTrace({ task, workloadClassification, routeDecision: decision, batchResults, mergeResult, outcomeComparisons, assembledAt });
 
   const identity = generateIdentity();
-  const signed = signExecutionTrace(trace, identity.privateKey, identity.publicKey);
+  // 'bad_signature' (see stubBatchOutcomeForTest()'s header): sign with this
+  // run's own real private key, but attest a DIFFERENT real identity's
+  // public key -- signBundle()/verifyBundle() run completely unmodified;
+  // this is a genuine ed25519 signature/key mismatch, the same shape a real
+  // corrupted attestation would take, not a fabricated `verified: false`.
+  const attestedPublicKey = TEST_SCENARIO === 'bad_signature' ? generateIdentity().publicKey : identity.publicKey;
+  const signed = signExecutionTrace(trace, identity.privateKey, attestedPublicKey);
   const verified = verifyExecutionTrace(signed);
 
   // Real reuse of buildDashboardSnapshot()'s own meanOutcomeAccuracy math --
