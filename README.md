@@ -1,4 +1,4 @@
-hi hello vanakam# QUORUM 
+# QUORUM 
 
 [![tests](https://img.shields.io/badge/tests-413%2F414%20passing-brightgreen)](#testing)
 [![node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
